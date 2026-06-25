@@ -29,6 +29,7 @@ function mainMenuKeyboard() {
       [{ text: '✅ ხელმისაწვდომი ვარ' }, { text: '❌ მიუწვდომელი ვარ' }],
       [{ text: '🛣️ მარშრუტზე ვარ' },    { text: '🗑️ მარშრუტი გავასუფთავე' }],
       [{ text: '📋 ჩემი შეკვეთები' },    { text: '⭐ სტატისტიკა' }],
+      [{ text: '💰 ჩემი ბალანსი' }],
     ],
     resize_keyboard: true,
   };
@@ -261,6 +262,9 @@ async function onMenuAction(msg) {
 
     case '⭐ სტატისტიკა':
       return showStats(chatId, driver.id);
+
+    case '💰 ჩემი ბალანსი':
+      return showBalance(chatId, driver);
   }
 }
 
@@ -719,6 +723,22 @@ async function showHistory(chatId, driverId) {
   return bot.sendMessage(
     chatId,
     `📋 *ჩემი შეკვეთები (${history.length}):*\n\n${lines.join('\n\n')}`,
+    { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() }
+  );
+}
+
+async function showBalance(chatId, driver) {
+  const balance      = parseFloat(driver.balance)      || 0;
+  const bonusBalance = parseFloat(driver.bonus_balance) || 0;
+  const warning      = balance < 0
+    ? '\n\n⚠️ ბალანსი მინუსშია — cash შეკვეთები ვეღარ მოვა, სანამ არ დაიფარება.'
+    : '';
+  return bot.sendMessage(
+    chatId,
+    `💰 *ჩემი ბალანსი*\n\n` +
+    `💵 ძირითადი: *${balance.toFixed(2)} ₾*\n` +
+    `🎁 ბონუსი:   *${bonusBalance.toFixed(2)} ₾*` +
+    warning,
     { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() }
   );
 }

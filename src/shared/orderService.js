@@ -108,7 +108,7 @@ async function getEligibleDrivers(
      WHERE is_active    = true
        AND is_available = true
        AND ($1::boolean OR truck_type = 'crane')
-       AND ($2 = 'card' OR balance >= 0)
+       AND NOT ($2::text = 'cash' AND balance < 0)
        AND (
          -- No active route: sees all eligible orders
          route_from IS NULL
