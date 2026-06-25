@@ -8,7 +8,7 @@ const {
   updateOrder, updateBonus, updateWd, updateDrvMgmt,
   clearOrder, clearBonus, clearWd, clearDrvMgmt,
 } = require('./sessions');
-const { createOrder, getOrderStats, getAdminHistory, getEligibleDrivers, getDriverBalances, recordWithdrawal } = require('../shared/orderService');
+const { createOrder, getOrderStats, getAdminHistory, getActiveOrders, getEligibleDrivers, getDriverBalances, recordWithdrawal } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const { addDiscount }                       = require('../shared/passengerService');
 const {
@@ -41,7 +41,7 @@ function mainMenu() {
       [{ text: '📞 ახალი შეკვეთა (ტელეფონი)' }],
       [{ text: '📊 სტატისტიკა' },    { text: '📋 ბოლო შეკვეთები' }],
       [{ text: '🎁 ბონუსები' },       { text: '💰 ბალანსები' }],
-      [{ text: '🚚 მძღოლები' }],
+      [{ text: '🚚 მძღოლები' },       { text: '🚨 აქტიური შეკვეთები' }],
     ],
     resize_keyboard: true,
   };
@@ -88,6 +88,7 @@ bot.on('message', guard(async (msg) => {
         else if (msg.text === '🎁 ბონუსები')                  await showBonusMenu(chatId);
         else if (msg.text === '💰 ბალანსები')                 await showBalanceMenu(chatId);
         else if (msg.text === '🚚 მძღოლები')                  await showDriverList(chatId, 0);
+        else if (msg.text === '🚨 აქტიური შეკვეთები')         await showActiveOrders(chatId);
         break;
       // Order flow
       case STEPS.AWAIT_PHONE:    await onPhone(chatId, msg.text);    break;
@@ -128,6 +129,8 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
     else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
+    // Active orders tabs
+    else if (data.startsWith('adm_ac:'))           await onActiveTab(query);
     // History filters
     else if (data.startsWith('adm_hist:'))         await onHistFilter(query);
     // Driver management
@@ -419,6 +422,96 @@ async function onHistFilter(query) {
     return;
   }
   return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+}
+
+// ══ ACTIVE ORDERS ════════════════════════════════════════════════════════════
+
+const TAB_LABELS = { pending: '⏳ Pending', active: '🚗 Active', alerts: '⚠️ ალერტები' };
+
+const STATUS_ICON_ACTIVE = { accepted: '🚗', arrived: '📍', in_progress: '🚛' };
+
+function formatOrderLine(o) {
+  const from = (o.pickup_address      || '').substring(0, 22);
+  const to   = (o.destination_address || '').substring(0, 22);
+  const src  = o.source === 'phone' ? '📞' : '📱';
+
+  if (o.status === 'pending') {
+    const mins  = parseInt(o.minutes_waiting) || 0;
+    const alert = mins >= 10 ? '⚠️ ' : '';
+    const who   = o.source === 'phone' ? (o.caller_phone || '?') : (o.passenger_name || '?');
+    const vtype = o.vehicle_size === 'large' ? '🏗' : '🚗';
+    const roll  = o.can_roll ? '' : ' ❌გორ';
+    return `${alert}*#${o.id}* | ${mins} წთ | ${src} ${who}\n   📍 ${from} → ${to} | ${o.price} ₾ ${vtype}${roll}`;
+  }
+
+  const mins    = parseInt(o.minutes_since_accepted) || 0;
+  const alert   = o.status === 'accepted' && mins >= 30 ? '⚠️ ' : '';
+  const stIcon  = STATUS_ICON_ACTIVE[o.status] || '•';
+  const drvLine = o.driver_name
+    ? `\n   👤 ${o.driver_name}${o.driver_phone ? ` | 📞 ${o.driver_phone}` : ''}`
+    : '';
+  return `${alert}*#${o.id}* | ${stIcon} ${o.status} | ${mins} წთ${drvLine}\n   📍 ${from} → ${to} | ${o.price} ₾`;
+}
+
+async function showActiveOrders(chatId) {
+  return bot.sendMessage(chatId, '🚨 *აქტიური შეკვეთები* — ჩანართი:', {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '⏳ Pending',    callback_data: 'adm_ac:pending' },
+        { text: '🚗 Active',     callback_data: 'adm_ac:active'  },
+        { text: '⚠️ ალერტები', callback_data: 'adm_ac:alerts'  },
+      ]],
+    },
+  });
+}
+
+async function onActiveTab(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const tab    = query.data.split(':')[1];
+  const orders = await getActiveOrders(tab);
+
+  const tabLabel = TAB_LABELS[tab] || tab;
+
+  if (!orders.length) {
+    return bot.sendMessage(chatId,
+      `${tabLabel}: შეკვეთები არ არის.`,
+      { reply_markup: { inline_keyboard: [[
+        { text: '⏳ Pending',    callback_data: 'adm_ac:pending' },
+        { text: '🚗 Active',     callback_data: 'adm_ac:active'  },
+        { text: '⚠️ ალერტები', callback_data: 'adm_ac:alerts'  },
+      ]] } }
+    );
+  }
+
+  const lines  = orders.map(o => formatOrderLine(o));
+  const header = `${tabLabel} (${orders.length}):`;
+  const nav    = { reply_markup: { inline_keyboard: [[
+    { text: '⏳ Pending',    callback_data: 'adm_ac:pending' },
+    { text: '🚗 Active',     callback_data: 'adm_ac:active'  },
+    { text: '⚠️ ალერტები', callback_data: 'adm_ac:alerts'  },
+  ]] } };
+
+  const full = `${header}\n\n${lines.join('\n\n')}`;
+  if (full.length <= 4000) {
+    return bot.sendMessage(chatId, full, { parse_mode: 'Markdown', ...nav });
+  }
+
+  // split into chunks if too long
+  const chunks = [];
+  let cur = header + '\n\n';
+  for (const line of lines) {
+    if ((cur + line).length > 3900) { chunks.push(cur.trim()); cur = ''; }
+    cur += line + '\n\n';
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+
+  for (let i = 0; i < chunks.length; i++) {
+    const opts = { parse_mode: 'Markdown' };
+    if (i === chunks.length - 1) Object.assign(opts, nav);
+    await bot.sendMessage(chatId, chunks[i], opts);
+  }
 }
 
 // ══ BONUS MENU ════════════════════════════════════════════════════════════════

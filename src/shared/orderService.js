@@ -393,6 +393,95 @@ async function getAdminHistory({ status = null, days = null, limit = 20, offset 
   return rows;
 }
 
+// Admin: live snapshot of pending + active orders with elapsed-time fields.
+// tab: 'pending' | 'active' | 'alerts'
+async function getActiveOrders(tab) {
+  const pendingQ = () => pool.query(`
+    SELECT
+      o.id, o.created_at, o.status,
+      o.pickup_address, o.destination_address,
+      o.price, o.vehicle_size, o.can_roll,
+      o.source, o.caller_phone,
+      p.full_name AS passenger_name,
+      p.phone     AS passenger_phone,
+      ROUND(EXTRACT(EPOCH FROM (NOW() - o.created_at)) / 60)::int AS minutes_waiting,
+      NULL::int   AS minutes_since_accepted,
+      NULL::text  AS driver_name,
+      NULL::text  AS driver_phone
+    FROM orders o
+    LEFT JOIN passengers p ON o.passenger_id = p.id
+    WHERE o.status = 'pending'
+    ORDER BY o.created_at ASC
+  `);
+
+  const activeQ = () => pool.query(`
+    SELECT
+      o.id, o.created_at, o.status,
+      o.pickup_address, o.destination_address,
+      o.price, o.vehicle_size, o.can_roll,
+      o.source, o.caller_phone,
+      p.full_name AS passenger_name,
+      p.phone     AS passenger_phone,
+      NULL::int   AS minutes_waiting,
+      ROUND(EXTRACT(EPOCH FROM (NOW() - o.accepted_at)) / 60)::int AS minutes_since_accepted,
+      d.full_name AS driver_name,
+      d.phone     AS driver_phone
+    FROM orders o
+    LEFT JOIN passengers p ON o.passenger_id = p.id
+    LEFT JOIN drivers    d ON o.driver_id    = d.id
+    WHERE o.status IN ('accepted', 'arrived', 'in_progress')
+    ORDER BY o.accepted_at ASC NULLS LAST
+  `);
+
+  if (tab === 'pending') { const { rows } = await pendingQ(); return rows; }
+  if (tab === 'active')  { const { rows } = await activeQ();  return rows; }
+
+  if (tab === 'alerts') {
+    const [{ rows: pending }, { rows: active }] = await Promise.all([
+      pool.query(`
+        SELECT
+          o.id, o.created_at, o.status,
+          o.pickup_address, o.destination_address,
+          o.price, o.vehicle_size, o.can_roll,
+          o.source, o.caller_phone,
+          p.full_name AS passenger_name,
+          p.phone     AS passenger_phone,
+          ROUND(EXTRACT(EPOCH FROM (NOW() - o.created_at)) / 60)::int AS minutes_waiting,
+          NULL::int  AS minutes_since_accepted,
+          NULL::text AS driver_name,
+          NULL::text AS driver_phone
+        FROM orders o
+        LEFT JOIN passengers p ON o.passenger_id = p.id
+        WHERE o.status = 'pending'
+          AND o.created_at < NOW() - INTERVAL '10 minutes'
+        ORDER BY o.created_at ASC
+      `),
+      pool.query(`
+        SELECT
+          o.id, o.created_at, o.status,
+          o.pickup_address, o.destination_address,
+          o.price, o.vehicle_size, o.can_roll,
+          o.source, o.caller_phone,
+          p.full_name AS passenger_name,
+          p.phone     AS passenger_phone,
+          NULL::int   AS minutes_waiting,
+          ROUND(EXTRACT(EPOCH FROM (NOW() - o.accepted_at)) / 60)::int AS minutes_since_accepted,
+          d.full_name AS driver_name,
+          d.phone     AS driver_phone
+        FROM orders o
+        LEFT JOIN passengers p ON o.passenger_id = p.id
+        LEFT JOIN drivers    d ON o.driver_id    = d.id
+        WHERE o.status = 'accepted'
+          AND o.accepted_at < NOW() - INTERVAL '30 minutes'
+        ORDER BY o.accepted_at ASC NULLS LAST
+      `),
+    ]);
+    return [...pending, ...active];
+  }
+
+  return [];
+}
+
 // Source breakdown statistics for admin dashboard.
 async function getOrderStats({ days = 30 } = {}) {
   const { rows } = await pool.query(
@@ -438,6 +527,7 @@ module.exports = {
   getDriverHistory,
   getDriverStats,
   getAdminHistory,
+  getActiveOrders,
   getOrderStats,
   settleOrder,
   getDriverBalances,
