@@ -12,7 +12,7 @@ const {
   setAvailability, setRoute, clearRoute,
 } = require('../shared/driverService');
 const {
-  acceptOrder, completeOrder, settleOrder,
+  acceptOrder, arriveOrder, startOrder, completeOrder, settleOrder,
   getDriverHistory, getDriverStats, getEligibleDrivers,
   ratePassenger,
 } = require('../shared/orderService');
@@ -473,6 +473,10 @@ bot.on('callback_query', async (query) => {
       step === STEPS.AWAIT_ROUTE_TO_CONFIRM
     )) {
       await onDriverGeoConfirm(query);
+    } else if (data.startsWith('arrived:')) {
+      await onArrived(query);
+    } else if (data.startsWith('start:')) {
+      await onStart(query);
     } else if (data.startsWith('reg_truck:') && step === STEPS.AWAIT_TRUCK_TYPE) {
       await onRegTruckType(query);
     } else if (data.startsWith('depart:') && step === STEPS.AWAIT_ROUTE_DEPARTURE) {
@@ -599,12 +603,91 @@ async function onAccept(query) {
     `📍 ${order.pickup_address}\n` +
     `🏁 ${order.destination_address}\n` +
     `${sizeLabel}  |  💰 ${order.price} ₾  |  ${payLabel}\n\n` +
-    'მიტანის შემდეგ დააჭირეთ ქვემოთ მოცემულ ღილაკს.',
+    'ადგილზე მისვლისას დააჭირეთ:',
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [[
-          { text: '✅ შეკვეთა შეასრულდა', callback_data: `complete:${orderId}` },
+          { text: '🚗 მოვედი', callback_data: `arrived:${orderId}` },
+        ]],
+      },
+    }
+  );
+}
+
+// ── Order: arrived ─────────────────────────────────────────────────────────────
+
+async function onArrived(query) {
+  const chatId  = query.message.chat.id;
+  const orderId = parseInt(query.data.split(':')[1], 10);
+
+  const driver = await findByTelegramId(query.from.id);
+  if (!driver) {
+    return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
+  }
+
+  const order = await arriveOrder(orderId, driver.id);
+  if (!order) {
+    return bot.answerCallbackQuery(query.id, { text: '⚠️ ვერ მოხდა სტატუსის განახლება.' });
+  }
+
+  await bot.answerCallbackQuery(query.id, { text: '📍 სტატუსი: მოვედი!' });
+
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+
+  await notifier.notifyPassengerDriverArrived(order.passenger_telegram_id, driver);
+
+  return bot.sendMessage(
+    chatId,
+    `📍 *მოვედი!*\n\n` +
+    `👤 მგზავრი: ${order.passenger_name || '—'}\n` +
+    `☎️ ${order.passenger_phone || '—'}\n\n` +
+    'მგზავრის ჩასხდომის შემდეგ დააჭირეთ:',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🚛 დავიძარი', callback_data: `start:${orderId}` },
+        ]],
+      },
+    }
+  );
+}
+
+// ── Order: in_progress ─────────────────────────────────────────────────────────
+
+async function onStart(query) {
+  const chatId  = query.message.chat.id;
+  const orderId = parseInt(query.data.split(':')[1], 10);
+
+  const driver = await findByTelegramId(query.from.id);
+  if (!driver) {
+    return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
+  }
+
+  const order = await startOrder(orderId, driver.id);
+  if (!order) {
+    return bot.answerCallbackQuery(query.id, { text: '⚠️ ვერ მოხდა სტატუსის განახლება.' });
+  }
+
+  await bot.answerCallbackQuery(query.id, { text: '🚛 მგზავრობა დაიწყო!' });
+
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+
+  await notifier.notifyPassengerTripStarted(order.passenger_telegram_id);
+
+  return bot.sendMessage(
+    chatId,
+    '🚛 *მგზავრობა დაიწყო!*\n\nდანიშნულებაზე მისვლის შემდეგ დააჭირეთ:',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ დავასრულე', callback_data: `complete:${orderId}` },
         ]],
       },
     }
@@ -653,6 +736,8 @@ async function onComplete(query) {
 
   const payLabel = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
   const sign     = result.balanceDelta >= 0 ? '+' : '';
+
+  await notifier.notifyPassengerTripCompleted(orderId, order.passenger_telegram_id);
 
   await bot.sendMessage(
     chatId,

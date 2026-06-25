@@ -50,10 +50,49 @@ async function acceptOrder(orderId, driverId) {
   return rows[0] || null;
 }
 
+async function arriveOrder(orderId, driverId) {
+  const { rows } = await pool.query(
+    `WITH updated AS (
+       UPDATE orders SET status = 'arrived', arrived_at = NOW()
+       WHERE id = $1 AND driver_id = $2 AND status = 'accepted'
+       RETURNING *
+     )
+     SELECT u.*,
+            p.telegram_id AS passenger_telegram_id,
+            p.phone       AS passenger_phone,
+            p.full_name   AS passenger_name
+     FROM updated u
+     LEFT JOIN passengers p ON u.passenger_id = p.id`,
+    [orderId, driverId]
+  );
+  return rows[0] || null;
+}
+
+async function startOrder(orderId, driverId) {
+  const { rows } = await pool.query(
+    `WITH updated AS (
+       UPDATE orders SET status = 'in_progress', started_at = NOW()
+       WHERE id = $1 AND driver_id = $2 AND status = 'arrived'
+       RETURNING *
+     )
+     SELECT u.*, p.telegram_id AS passenger_telegram_id
+     FROM updated u
+     LEFT JOIN passengers p ON u.passenger_id = p.id`,
+    [orderId, driverId]
+  );
+  return rows[0] || null;
+}
+
 async function completeOrder(orderId, driverId) {
   const { rows } = await pool.query(
-    `UPDATE orders SET status='completed', completed_at=NOW()
-     WHERE id=$1 AND driver_id=$2 AND status='accepted' RETURNING *`,
+    `WITH updated AS (
+       UPDATE orders SET status = 'completed', completed_at = NOW()
+       WHERE id = $1 AND driver_id = $2 AND status = 'in_progress'
+       RETURNING *
+     )
+     SELECT u.*, p.telegram_id AS passenger_telegram_id
+     FROM updated u
+     LEFT JOIN passengers p ON u.passenger_id = p.id`,
     [orderId, driverId]
   );
   return rows[0] || null;
@@ -372,6 +411,8 @@ module.exports = {
   createOrder,
   getEligibleDrivers,
   acceptOrder,
+  arriveOrder,
+  startOrder,
   completeOrder,
   cancelOrder,
   getPendingOrders,

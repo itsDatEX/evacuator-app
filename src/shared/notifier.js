@@ -78,9 +78,8 @@ async function notifyPassengerOrderAccepted(order, driver, passengerTelegramId) 
   try {
     await _passengerBot.sendMessage(
       passengerTelegramId,
-      `🚗 *მძღოლი გამოემგზავრა!*\n\n` +
+      `🚗 *მძღოლი მიდის შენკენ!*\n\n` +
       `👤 ${driver.full_name}\n` +
-      `📱 ${driver.phone}\n` +
       `🚙 ${driver.car_model || '—'}  |  ${driver.car_plate || '—'}\n\n` +
       `შეკვეთა #${order.id}`,
       { parse_mode: 'Markdown' }
@@ -118,10 +117,63 @@ async function notifyDriversOrderTaken(orderId, acceptingDriverTelegramId, eligi
   _orderMsgIds.delete(orderId);
 }
 
+async function notifyPassengerDriverArrived(passengerTelegramId, driver) {
+  if (!_passengerBot || !passengerTelegramId) return;
+  try {
+    await _passengerBot.sendMessage(
+      passengerTelegramId,
+      `📍 *მძღოლი მოვიდა!*\n\n☎️ დაუკავშირდი: ${driver.phone}`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    logger.warn('Could not notify passenger of arrival', { error: err.message });
+  }
+}
+
+async function notifyPassengerTripStarted(passengerTelegramId) {
+  if (!_passengerBot || !passengerTelegramId) return;
+  try {
+    await _passengerBot.sendMessage(
+      passengerTelegramId,
+      '🚛 *მგზავრობა დაიწყო!*\n\nევაკუატორი მიდის დანიშნულებისკენ.',
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    logger.warn('Could not notify passenger of trip start', { error: err.message });
+  }
+}
+
+async function notifyPassengerTripCompleted(orderId, passengerTelegramId) {
+  if (!_passengerBot || !passengerTelegramId) return;
+  try {
+    await _passengerBot.sendMessage(
+      passengerTelegramId,
+      '✅ *მგზავრობა დასრულდა!*\n\nშეაფასე მძღოლი:',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '⭐ 1', callback_data: `rate_driver:${orderId}:1` },
+            { text: '⭐ 2', callback_data: `rate_driver:${orderId}:2` },
+            { text: '⭐ 3', callback_data: `rate_driver:${orderId}:3` },
+            { text: '⭐ 4', callback_data: `rate_driver:${orderId}:4` },
+            { text: '⭐ 5', callback_data: `rate_driver:${orderId}:5` },
+          ]],
+        },
+      }
+    );
+  } catch (err) {
+    logger.warn('Could not notify passenger of trip completion', { error: err.message });
+  }
+}
+
 module.exports = {
   setDriverBot,
   setPassengerBot,
   notifyDriversOfNewOrder,
   notifyPassengerOrderAccepted,
+  notifyPassengerDriverArrived,
+  notifyPassengerTripStarted,
+  notifyPassengerTripCompleted,
   notifyDriversOrderTaken,
 };

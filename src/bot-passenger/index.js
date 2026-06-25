@@ -5,7 +5,7 @@ const config = require('../config');
 const logger = require('../shared/logger');
 const { STEPS, getSession, setStep, updateOrder, updateReg, clearOrder } = require('./sessions');
 const { findByTelegramId, createPassenger } = require('../shared/passengerService');
-const { createOrder, getPassengerHistory, getEligibleDrivers } = require('../shared/orderService');
+const { createOrder, getPassengerHistory, getEligibleDrivers, rateDriver } = require('../shared/orderService');
 const { consumeDiscount } = require('../shared/passengerService');
 const { calculatePrice } = require('../shared/sheets');
 const { haversineKm, coordsLabel, getRoadDistanceKm } = require('../shared/geo');
@@ -416,7 +416,9 @@ bot.on('callback_query', async (query) => {
   const data = query.data;
 
   try {
-    if (data.startsWith('geo_confirm:') &&
+    if (data.startsWith('rate_driver:')) {
+      await onRateDriver(query);
+    } else if (data.startsWith('geo_confirm:') &&
         (step === STEPS.AWAIT_PICKUP_CONFIRM || step === STEPS.AWAIT_DEST_CONFIRM)) {
       await onGeoConfirm(query);
     } else if (data.startsWith('vsize:') && step === STEPS.AWAIT_VEHICLE_SIZE) {
@@ -624,6 +626,28 @@ async function onConfirm(query) {
   });
 
   await notifier.notifyDriversOfNewOrder(newOrder, eligibleDrivers, draft);
+}
+
+// ── Rate driver (after trip completed) ───────────────────────────────────────
+
+async function onRateDriver(query) {
+  const chatId  = query.message.chat.id;
+  const parts   = query.data.split(':'); // rate_driver:orderId:score
+  const orderId = parseInt(parts[1], 10);
+  const score   = parseInt(parts[2], 10);
+
+  const passenger = await findByTelegramId(query.from.id);
+  if (!passenger) {
+    return bot.answerCallbackQuery(query.id, { text: '⚠️ ვერ მოიძებნა.' });
+  }
+
+  await rateDriver(orderId, passenger.id, score);
+  await bot.answerCallbackQuery(query.id, { text: `⭐ ${score}/5 — გმადლობთ!` });
+
+  return bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id:    chatId,
+    message_id: query.message.message_id,
+  }).catch(() => {});
 }
 
 // ── Order history ─────────────────────────────────────────────────────────────
