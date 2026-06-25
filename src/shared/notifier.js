@@ -14,7 +14,23 @@ function setPassengerBot(bot) { _passengerBot = bot; }
 // draft: session.order snapshot — has pickupAddress, destAddress, distanceKm,
 //        vehicleSize, canRoll, price, and optionally callerPhone (phone orders).
 async function notifyDriversOfNewOrder(order, drivers, draft) {
-  if (!_driverBot || !drivers.length) return;
+  logger.info('notifyDriversOfNewOrder called', {
+    orderId:            order.id,
+    driverBotReady:     !!_driverBot,
+    eligibleDriverCount: drivers.length,
+    driverTelegramIds:  drivers.map(d => d.telegram_id),
+  });
+
+  if (!_driverBot) {
+    logger.warn('notifyDriversOfNewOrder: driverBot not set — skipping');
+    return;
+  }
+  if (!drivers.length) {
+    logger.warn('notifyDriversOfNewOrder: no eligible drivers — skipping', {
+      orderId: order.id,
+    });
+    return;
+  }
 
   const sizeLabel = draft.vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
   const rollLabel = draft.canRoll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
@@ -33,6 +49,11 @@ async function notifyDriversOfNewOrder(order, drivers, draft) {
   const msgMap = new Map();
   for (const driver of drivers) {
     try {
+      logger.info('Sending new-order notification', {
+        orderId:    order.id,
+        driverId:   driver.id,
+        telegramId: driver.telegram_id,
+      });
       const sent = await _driverBot.sendMessage(driver.telegram_id, text, {
         parse_mode: 'Markdown',
         reply_markup: {

@@ -598,6 +598,16 @@ async function onConfirm(query) {
     { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() }
   );
 
+  logger.info('Searching eligible drivers', {
+    orderId:       newOrder.id,
+    canRoll:       draft.canRoll,
+    paymentMethod: draft.paymentMethod,
+    pickupCity:    draft.pickupCity  || null,
+    destCity:      draft.destCity    || null,
+    pickupAddress: draft.pickupAddress,
+    destAddress:   draft.destAddress,
+  });
+
   const eligibleDrivers = await getEligibleDrivers(
     draft.canRoll,
     draft.paymentMethod,
@@ -606,6 +616,13 @@ async function onConfirm(query) {
     draft.pickupAddress,
     draft.destAddress,
   );
+
+  logger.info('Eligible drivers result', {
+    orderId: newOrder.id,
+    count:   eligibleDrivers.length,
+    ids:     eligibleDrivers.map(d => d.id),
+  });
+
   await notifier.notifyDriversOfNewOrder(newOrder, eligibleDrivers, draft);
 }
 
