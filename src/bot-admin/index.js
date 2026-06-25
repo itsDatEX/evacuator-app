@@ -5,13 +5,18 @@ const config      = require('../config');
 const logger      = require('../shared/logger');
 const {
   STEPS, getSession, setStep,
-  updateOrder, updateBonus, updateWd,
-  clearOrder, clearBonus, clearWd,
+  updateOrder, updateBonus, updateWd, updateDrvMgmt,
+  clearOrder, clearBonus, clearWd, clearDrvMgmt,
 } = require('./sessions');
 const { createOrder, getOrderStats, getAdminHistory, getEligibleDrivers, getDriverBalances, recordWithdrawal } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const { addDiscount }                       = require('../shared/passengerService');
-const { addBonusBalance }                   = require('../shared/driverService');
+const {
+  addBonusBalance,
+  getAllDrivers, countDrivers,
+  findDriverById, findDriverByPhone,
+  updateDriverField, toggleDriverActive,
+} = require('../shared/driverService');
 const { getBonusEnabled, toggleBonusEnabled } = require('../shared/configService');
 const notifier = require('../shared/notifier');
 
@@ -36,6 +41,7 @@ function mainMenu() {
       [{ text: '📞 ახალი შეკვეთა (ტელეფონი)' }],
       [{ text: '📊 სტატისტიკა' },    { text: '📋 ბოლო შეკვეთები' }],
       [{ text: '🎁 ბონუსები' },       { text: '💰 ბალანსები' }],
+      [{ text: '🚚 მძღოლები' }],
     ],
     resize_keyboard: true,
   };
@@ -81,6 +87,7 @@ bot.on('message', guard(async (msg) => {
         else if (msg.text === '📋 ბოლო შეკვეთები')           await showHistory(chatId);
         else if (msg.text === '🎁 ბონუსები')                  await showBonusMenu(chatId);
         else if (msg.text === '💰 ბალანსები')                 await showBalanceMenu(chatId);
+        else if (msg.text === '🚚 მძღოლები')                  await showDriverList(chatId, 0);
         break;
       // Order flow
       case STEPS.AWAIT_PHONE:    await onPhone(chatId, msg.text);    break;
@@ -93,9 +100,12 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_DISC_PASS_ID:    await onDiscPassId(chatId, msg.text);    break;
       case STEPS.AWAIT_DISC_AMOUNT:     await onDiscAmount(chatId, msg.text);    break;
       // Withdrawal flow
-      case STEPS.AWAIT_WD_DRIVER_ID: await onWdDriverId(chatId, msg.text); break;
-      case STEPS.AWAIT_WD_AMOUNT:    await onWdAmount(chatId, msg.text);   break;
-      case STEPS.AWAIT_WD_NOTE:      await onWdNote(chatId, msg.text);     break;
+      case STEPS.AWAIT_WD_DRIVER_ID: await onWdDriverId(chatId, msg.text);    break;
+      case STEPS.AWAIT_WD_AMOUNT:    await onWdAmount(chatId, msg.text);      break;
+      case STEPS.AWAIT_WD_NOTE:      await onWdNote(chatId, msg.text);        break;
+      // Driver management
+      case STEPS.AWAIT_DRV_SEARCH:     await onDriverSearch(chatId, msg.text);    break;
+      case STEPS.AWAIT_DRV_EDIT_FIELD: await onDriverEditValue(chatId, msg.text); break;
       default: break;
     }
   } catch (err) {
@@ -117,7 +127,17 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_canroll:') && step === STEPS.AWAIT_CANROLL) await onCanRoll(query);
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
-    else if (data === 'adm_bonus_toggle')    await onBonusToggle(query);
+    else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
+    // History filters
+    else if (data.startsWith('adm_hist:'))         await onHistFilter(query);
+    // Driver management
+    else if (data.startsWith('adm_drv_list:'))     await onDrvList(query);
+    else if (data === 'adm_drv_search')            await onDrvSearchStart(query);
+    else if (data.startsWith('adm_drv:'))          await onDrvProfile(query);
+    else if (data.startsWith('adm_drv_edit:'))     await onDrvEditStart(query);
+    else if (data.startsWith('adm_drv_toggle:'))   await onDrvToggle(query);
+    else if (data === 'adm_drv_back')              { await bot.answerCallbackQuery(query.id); await showDriverList(chatId, 0); }
+    else if (data === 'noop')                      await bot.answerCallbackQuery(query.id);
     else await bot.answerCallbackQuery(query.id);
   } catch (err) {
     logger.error('Admin callback error', { chatId, data, error: err.message });
@@ -303,18 +323,83 @@ async function showStats(chatId) {
 }
 
 async function showHistory(chatId) {
-  const history = await getAdminHistory({ limit: 15 });
-  if (!history.length) return bot.sendMessage(chatId, '📋 შეკვეთები ვერ მოიძებნა.');
-  const statusIcon = { completed: '✅', cancelled: '❌', pending: '⏳', accepted: '🚗' };
+  return bot.sendMessage(chatId, '📋 *ფილტრი:*', {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '📋 ყველა 7d',      callback_data: 'adm_hist:all:7'        },
+          { text: '📋 ყველა 30d',     callback_data: 'adm_hist:all:30'       },
+        ],
+        [
+          { text: '✅ Completed 7d',  callback_data: 'adm_hist:completed:7'  },
+          { text: '✅ Completed 30d', callback_data: 'adm_hist:completed:30' },
+        ],
+        [
+          { text: '❌ Cancelled 7d',  callback_data: 'adm_hist:cancelled:7'  },
+          { text: '❌ Cancelled 30d', callback_data: 'adm_hist:cancelled:30' },
+        ],
+        [
+          { text: '⏳ Pending (ახლა)',  callback_data: 'adm_hist:pending:0'  },
+          { text: '🚗 Active (ახლა)',   callback_data: 'adm_hist:active:0'   },
+        ],
+      ],
+    },
+  });
+}
+
+const STATUS_ICON = {
+  completed: '✅', cancelled: '❌', pending: '⏳',
+  accepted: '🚗', arrived: '📍', in_progress: '🚛',
+};
+
+async function onHistFilter(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const parts  = query.data.split(':'); // adm_hist:status:days
+  const status = parts[1];
+  const days   = parseInt(parts[2], 10);
+
+  const statusArg = status === 'all' ? null : status;
+  const daysArg   = days > 0 ? days : null;
+  const history   = await getAdminHistory({ status: statusArg, days: daysArg, limit: 20 });
+
+  if (!history.length) {
+    return bot.sendMessage(chatId, '📋 შეკვეთები ვერ მოიძებნა.');
+  }
+
   const lines = history.map((o, i) => {
-    const date   = new Date(o.created_at).toLocaleDateString('ka-GE');
+    const dt     = new Date(o.created_at);
+    const date   = dt.toLocaleDateString('ka-GE');
+    const time   = dt.toLocaleTimeString('ka-GE', { hour: '2-digit', minute: '2-digit' });
     const src    = o.source === 'phone' ? '📞' : '📱';
     const who    = o.source === 'phone' ? (o.caller_phone || '?') : (o.passenger_name || '?');
-    const driver = o.driver_name || '—';
-    const icon   = statusIcon[o.status] || '•';
-    return `${i + 1}. ${icon} ${src} ${date} | ${who} → ${driver} | ${o.price} ₾`;
+    const driver = o.driver_name ? `👤 ${o.driver_name}` : '—';
+    const icon   = STATUS_ICON[o.status] || '•';
+    const from   = (o.pickup_address     || '').substring(0, 25);
+    const to     = (o.destination_address|| '').substring(0, 25);
+    return `${i + 1}. ${icon} ${src} *${date} ${time}*\n   ${who} → ${driver}\n   ${from} → ${to} | ${o.price} ₾`;
   });
-  return bot.sendMessage(chatId, `📋 *ბოლო 15:*\n\n${lines.join('\n')}`, { parse_mode: 'Markdown' });
+
+  const statusLabel = { all: 'ყველა', completed: '✅ Completed', cancelled: '❌ Cancelled', pending: '⏳ Pending', active: '🚗 Active' };
+  const period      = days > 0 ? `ბოლო ${days} დღე` : 'ახლა';
+  const header      = `📋 *${statusLabel[status] || status} | ${period}* (${history.length}):`;
+
+  const text = `${header}\n\n${lines.join('\n\n')}`;
+  if (text.length > 4000) {
+    const chunks = [];
+    let cur = header + '\n\n';
+    for (const line of lines) {
+      if ((cur + line).length > 3900) { chunks.push(cur); cur = ''; }
+      cur += line + '\n\n';
+    }
+    if (cur.trim()) chunks.push(cur);
+    for (const chunk of chunks) {
+      await bot.sendMessage(chatId, chunk.trim(), { parse_mode: 'Markdown' });
+    }
+    return;
+  }
+  return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
 }
 
 // ══ BONUS MENU ════════════════════════════════════════════════════════════════
@@ -490,6 +575,149 @@ async function onWdNote(chatId, text) {
     `✅ გატანა ჩაიწერა\n👤 *${driver.full_name}*\n➖ ${wd.amount} ₾${note ? `\n📝 ${note}` : ''}\n💰 ახალი ბალანსი: *${newBalance.toFixed(2)} ₾*`,
     { parse_mode: 'Markdown', reply_markup: mainMenu() }
   );
+}
+
+// ══ DRIVER MANAGEMENT ════════════════════════════════════════════════════════
+
+const DRV_PAGE_SIZE = 8;
+
+async function showDriverList(chatId, page = 0) {
+  const [drivers, total] = await Promise.all([
+    getAllDrivers({ limit: DRV_PAGE_SIZE, offset: page * DRV_PAGE_SIZE }),
+    countDrivers(),
+  ]);
+
+  if (!drivers.length) return bot.sendMessage(chatId, '🚚 მძღოლები ვერ მოიძებნა.');
+
+  const rows = drivers.map(d => {
+    const active = d.is_active ? '✅' : '🔴';
+    const type   = d.truck_type === 'crane' ? '🏗' : '🚗';
+    return [{ text: `${active} ${type} ${d.full_name}`, callback_data: `adm_drv:${d.id}` }];
+  });
+
+  const totalPages = Math.ceil(total / DRV_PAGE_SIZE);
+  const navRow     = [];
+  if (page > 0)               navRow.push({ text: '← წინა',     callback_data: `adm_drv_list:${page - 1}` });
+  navRow.push({ text: `${page + 1}/${totalPages}`, callback_data: 'noop' });
+  if (page + 1 < totalPages)  navRow.push({ text: 'შემდეგი →', callback_data: `adm_drv_list:${page + 1}` });
+
+  rows.push([{ text: '🔍 ძებნა (ID ან ტელეფონი)', callback_data: 'adm_drv_search' }]);
+  if (navRow.length > 1) rows.push(navRow);
+
+  return bot.sendMessage(chatId, `🚚 *მძღოლები* (სულ: ${total}):`, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function showDriverProfile(chatId, driverId) {
+  const d = await findDriverById(driverId);
+  if (!d) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.');
+
+  const statusLabel = d.is_active    ? '✅ აქტიური'       : '🔴 დაბლოკილი';
+  const availLabel  = d.is_available ? '🟢 ხელმისაწვდომი' : '⚫ მიუწვდომელი';
+  const typeLabel   = d.truck_type === 'crane' ? '🏗 ამწე' : '🚗 ჩვეულებრივი';
+  const balTxt      = parseFloat(d.balance) < 0 ? `⚠️ ${d.balance} ₾` : `${d.balance} ₾`;
+
+  const text = [
+    `👤 *${d.full_name}*`,
+    `📱 Telegram ID: \`${d.telegram_id}\``,
+    `📞 ტელეფონი: ${d.phone}`,
+    `🚛 ტიპი: ${typeLabel}`,
+    `🚘 ${d.car_model || '—'} | ნომ: ${d.car_plate || '—'}`,
+    `💰 ბალანსი: ${balTxt}`,
+    `${statusLabel} | ${availLabel}`,
+  ].join('\n');
+
+  const toggleLabel = d.is_active ? '🔴 გაბლოკვა' : '🟢 განბლოკვა';
+
+  return bot.sendMessage(chatId, text, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✏️ სახელი',    callback_data: `adm_drv_edit:${d.id}:full_name` },
+          { text: '✏️ ტელეფონი', callback_data: `adm_drv_edit:${d.id}:phone`     },
+        ],
+        [
+          { text: '✏️ მოდელი', callback_data: `adm_drv_edit:${d.id}:car_model` },
+          { text: '✏️ ნომერი', callback_data: `adm_drv_edit:${d.id}:car_plate` },
+        ],
+        [{ text: toggleLabel,  callback_data: `adm_drv_toggle:${d.id}` }],
+        [{ text: '← სია',      callback_data: 'adm_drv_back'           }],
+      ],
+    },
+  });
+}
+
+async function onDrvList(query) {
+  await bot.answerCallbackQuery(query.id);
+  const page = parseInt(query.data.split(':')[1], 10) || 0;
+  return showDriverList(query.message.chat.id, page);
+}
+
+async function onDrvSearchStart(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  clearDrvMgmt(chatId);
+  setStep(chatId, STEPS.AWAIT_DRV_SEARCH);
+  return bot.sendMessage(chatId, '🔍 მძღოლის ID (რიცხვი) ან ტელეფონი (ან /cancel):',
+    { reply_markup: { remove_keyboard: true } });
+}
+
+async function onDriverSearch(chatId, text) {
+  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ჩაწერეთ ID ან ტელეფონი:');
+  const trimmed = text.trim();
+  const asInt   = /^\d+$/.test(trimmed) ? parseInt(trimmed, 10) : null;
+  const driver  = asInt
+    ? ((await findDriverById(asInt)) || (await findDriverByPhone(trimmed)))
+    : await findDriverByPhone(trimmed);
+
+  clearDrvMgmt(chatId);
+  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  return showDriverProfile(chatId, driver.id);
+}
+
+async function onDrvProfile(query) {
+  await bot.answerCallbackQuery(query.id);
+  const id = parseInt(query.data.split(':')[1], 10);
+  return showDriverProfile(query.message.chat.id, id);
+}
+
+const FIELD_LABELS = { full_name: 'სახელი', phone: 'ტელეფონი', car_model: 'მანქანის მოდელი', car_plate: 'სახ. ნომერი' };
+
+async function onDrvEditStart(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const parts  = query.data.split(':');   // adm_drv_edit:{id}:{field}
+  const id     = parseInt(parts[1], 10);
+  const field  = parts[2];
+  updateDrvMgmt(chatId, { driverId: id, editField: field });
+  setStep(chatId, STEPS.AWAIT_DRV_EDIT_FIELD);
+  return bot.sendMessage(chatId,
+    `✏️ ახალი მნიშვნელობა — *${FIELD_LABELS[field] || field}* (ან /cancel):`,
+    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+  );
+}
+
+async function onDriverEditValue(chatId, text) {
+  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ მნიშვნელობა არ შეიძლება ცარიელი იყოს:');
+  const { drvMgmt } = getSession(chatId);
+  const updated = await updateDriverField(drvMgmt.driverId, drvMgmt.editField, text.trim());
+  clearDrvMgmt(chatId);
+  if (!updated) return bot.sendMessage(chatId, '⚠️ განახლება ვერ მოხდა. /cancel');
+  return showDriverProfile(chatId, updated.id);
+}
+
+async function onDrvToggle(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const id     = parseInt(query.data.split(':')[1], 10);
+  const result = await toggleDriverActive(id);
+  if (!result) return bot.sendMessage(chatId, '⚠️ ვერ შეიცვალა სტატუსი.');
+  const label  = result.is_active ? '✅ განბლოკილია' : '🔴 დაბლოკილია';
+  await bot.sendMessage(chatId, `${label}: *${result.full_name}*`, { parse_mode: 'Markdown' });
+  return showDriverProfile(chatId, id);
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────

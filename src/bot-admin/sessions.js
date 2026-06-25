@@ -18,13 +18,16 @@ const STEPS = {
   AWAIT_WD_DRIVER_ID:    'AWAIT_WD_DRIVER_ID',
   AWAIT_WD_AMOUNT:       'AWAIT_WD_AMOUNT',
   AWAIT_WD_NOTE:         'AWAIT_WD_NOTE',
+  // Driver management
+  AWAIT_DRV_SEARCH:      'AWAIT_DRV_SEARCH',
+  AWAIT_DRV_EDIT_FIELD:  'AWAIT_DRV_EDIT_FIELD',
 };
 
 const sessions = new Map();
 
 function getSession(chatId) {
   if (!sessions.has(chatId)) {
-    sessions.set(chatId, { step: STEPS.IDLE, order: {}, bonus: {}, wd: {} });
+    sessions.set(chatId, { step: STEPS.IDLE, order: {}, bonus: {}, wd: {}, drvMgmt: {} });
   }
   return sessions.get(chatId);
 }
@@ -55,8 +58,15 @@ function clearWd(chatId) {
   s.step = STEPS.IDLE;
 }
 
+function updateDrvMgmt(chatId, data) { Object.assign(getSession(chatId).drvMgmt, data); }
+function clearDrvMgmt(chatId) {
+  const s    = getSession(chatId);
+  s.drvMgmt = {};
+  s.step    = STEPS.IDLE;
+}
+
 module.exports = {
   STEPS, getSession, setStep,
-  updateOrder, updateBonus, updateWd,
-  clearOrder, clearBonus, clearWd,
+  updateOrder, updateBonus, updateWd, updateDrvMgmt,
+  clearOrder, clearBonus, clearWd, clearDrvMgmt,
 };

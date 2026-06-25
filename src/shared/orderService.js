@@ -350,7 +350,9 @@ async function getDriverStats(driverId) {
 }
 
 // Admin history: full visibility — who rated whom, every score, and order source.
-async function getAdminHistory({ limit = 50, offset = 0 } = {}) {
+// status: null=all | 'completed' | 'cancelled' | 'pending' | 'active' (accepted+arrived+in_progress)
+// days:   null=all time | N=last N days
+async function getAdminHistory({ status = null, days = null, limit = 20, offset = 0 } = {}) {
   const { rows } = await pool.query(
     `SELECT
        o.id,
@@ -378,9 +380,15 @@ async function getAdminHistory({ limit = 50, offset = 0 } = {}) {
      FROM orders o
      LEFT JOIN passengers p ON o.passenger_id = p.id
      LEFT JOIN drivers    d ON o.driver_id    = d.id
+     WHERE (
+       $1::text IS NULL
+       OR ($1 = 'active'  AND o.status IN ('accepted', 'arrived', 'in_progress'))
+       OR ($1 != 'active' AND o.status = $1::text)
+     )
+     AND ($2::int IS NULL OR o.created_at > NOW() - INTERVAL '1 day' * $2)
      ORDER BY o.created_at DESC
-     LIMIT $1 OFFSET $2`,
-    [limit, offset]
+     LIMIT $3 OFFSET $4`,
+    [status, days, limit, offset]
   );
   return rows;
 }
