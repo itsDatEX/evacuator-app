@@ -107,7 +107,7 @@ async function getEligibleDrivers(
     `SELECT * FROM drivers
      WHERE is_active    = true
        AND is_available = true
-       AND ($1 OR truck_type = 'crane')
+       AND ($1::boolean OR truck_type = 'crane')
        AND ($2 = 'card' OR balance >= 0)
        AND (
          -- No active route: sees all eligible orders
@@ -117,12 +117,12 @@ async function getEligibleDrivers(
          OR (
            route_departure_at > NOW() - INTERVAL '2 hours'
            AND (
-             ($3 IS NOT NULL AND ($3 ILIKE '%' || route_from || '%' OR $3 ILIKE '%' || route_to || '%'))
-             OR ($4 IS NOT NULL AND ($4 ILIKE '%' || route_from || '%' OR $4 ILIKE '%' || route_to || '%'))
-             OR COALESCE($5, '') ILIKE '%' || route_from || '%'
-             OR COALESCE($5, '') ILIKE '%' || route_to   || '%'
-             OR COALESCE($6, '') ILIKE '%' || route_from || '%'
-             OR COALESCE($6, '') ILIKE '%' || route_to   || '%'
+             ($3::text IS NOT NULL AND ($3::text ILIKE '%' || route_from || '%' OR $3::text ILIKE '%' || route_to || '%'))
+             OR ($4::text IS NOT NULL AND ($4::text ILIKE '%' || route_from || '%' OR $4::text ILIKE '%' || route_to || '%'))
+             OR COALESCE($5::text, '') ILIKE '%' || route_from || '%'
+             OR COALESCE($5::text, '') ILIKE '%' || route_to   || '%'
+             OR COALESCE($6::text, '') ILIKE '%' || route_from || '%'
+             OR COALESCE($6::text, '') ILIKE '%' || route_to   || '%'
            )
          )
        )`,
