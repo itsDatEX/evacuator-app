@@ -393,6 +393,88 @@ async function getAdminHistory({ status = null, days = null, limit = 20, offset 
   return rows;
 }
 
+// ── Rating queries ────────────────────────────────────────────────────────────
+
+async function getDriverRatings() {
+  const { rows } = await pool.query(`
+    SELECT
+      d.id, d.full_name, d.phone,
+      COUNT(o.driver_rating)::int                AS rated_count,
+      ROUND(AVG(o.driver_rating)::NUMERIC, 2)    AS avg_rating
+    FROM drivers d
+    LEFT JOIN orders o ON o.driver_id = d.id
+      AND o.status = 'completed' AND o.driver_rating IS NOT NULL
+    WHERE d.is_active = true
+    GROUP BY d.id
+    HAVING COUNT(o.driver_rating) >= 1
+    ORDER BY avg_rating ASC, rated_count DESC
+  `);
+  return rows;
+}
+
+async function getDriverRatingHistory(driverId) {
+  const { rows } = await pool.query(`
+    SELECT
+      o.id, o.driver_rating, o.created_at,
+      o.pickup_address, o.destination_address,
+      p.full_name AS passenger_name,
+      p.phone     AS passenger_phone
+    FROM orders o
+    LEFT JOIN passengers p ON o.passenger_id = p.id
+    WHERE o.driver_id = $1 AND o.driver_rating IS NOT NULL
+    ORDER BY o.created_at DESC
+    LIMIT 10
+  `, [driverId]);
+  return rows;
+}
+
+async function getPassengerRatings() {
+  const { rows } = await pool.query(`
+    SELECT
+      p.id, p.full_name, p.phone,
+      COUNT(o.passenger_rating)::int              AS rated_count,
+      ROUND(AVG(o.passenger_rating)::NUMERIC, 2)  AS avg_rating
+    FROM passengers p
+    LEFT JOIN orders o ON o.passenger_id = p.id
+      AND o.status = 'completed' AND o.passenger_rating IS NOT NULL
+    GROUP BY p.id
+    HAVING COUNT(o.passenger_rating) >= 1
+    ORDER BY avg_rating ASC, rated_count DESC
+  `);
+  return rows;
+}
+
+async function getPassengerRatingHistory(passengerId) {
+  const { rows } = await pool.query(`
+    SELECT
+      o.id, o.passenger_rating, o.created_at,
+      o.pickup_address, o.destination_address,
+      p.full_name AS passenger_name,
+      p.phone     AS passenger_phone,
+      d.full_name AS driver_name,
+      d.phone     AS driver_phone
+    FROM orders o
+    LEFT JOIN passengers p ON o.passenger_id = p.id
+    LEFT JOIN drivers    d ON o.driver_id    = d.id
+    WHERE o.passenger_id = $1 AND o.passenger_rating IS NOT NULL
+    ORDER BY o.created_at DESC
+    LIMIT 10
+  `, [passengerId]);
+  return rows;
+}
+
+async function getPassengerStats(passengerId) {
+  const { rows } = await pool.query(`
+    SELECT
+      COUNT(*)                                      AS total_completed,
+      ROUND(AVG(passenger_rating)::NUMERIC, 2)      AS avg_rating,
+      COUNT(passenger_rating)::int                  AS rated_count
+    FROM orders
+    WHERE passenger_id = $1 AND status = 'completed'
+  `, [passengerId]);
+  return rows[0];
+}
+
 // Admin: live snapshot of pending + active orders with elapsed-time fields.
 // tab: 'pending' | 'active' | 'alerts'
 async function getActiveOrders(tab) {
@@ -532,4 +614,9 @@ module.exports = {
   settleOrder,
   getDriverBalances,
   recordWithdrawal,
+  getDriverRatings,
+  getDriverRatingHistory,
+  getPassengerRatings,
+  getPassengerRatingHistory,
+  getPassengerStats,
 };

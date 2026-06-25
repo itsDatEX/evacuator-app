@@ -8,7 +8,12 @@ const {
   updateOrder, updateBonus, updateWd, updateDrvMgmt,
   clearOrder, clearBonus, clearWd, clearDrvMgmt,
 } = require('./sessions');
-const { createOrder, getOrderStats, getAdminHistory, getActiveOrders, getEligibleDrivers, getDriverBalances, recordWithdrawal } = require('../shared/orderService');
+const {
+  createOrder, getOrderStats, getAdminHistory, getActiveOrders,
+  getEligibleDrivers, getDriverBalances, recordWithdrawal, getDriverStats,
+  getDriverRatings, getDriverRatingHistory,
+  getPassengerRatings, getPassengerRatingHistory, getPassengerStats,
+} = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const { addDiscount }                       = require('../shared/passengerService');
 const {
@@ -42,6 +47,7 @@ function mainMenu() {
       [{ text: '📊 სტატისტიკა' },    { text: '📋 ბოლო შეკვეთები' }],
       [{ text: '🎁 ბონუსები' },       { text: '💰 ბალანსები' }],
       [{ text: '🚚 მძღოლები' },       { text: '🚨 აქტიური შეკვეთები' }],
+      [{ text: '⭐ რეიტინგები' }],
     ],
     resize_keyboard: true,
   };
@@ -89,6 +95,7 @@ bot.on('message', guard(async (msg) => {
         else if (msg.text === '💰 ბალანსები')                 await showBalanceMenu(chatId);
         else if (msg.text === '🚚 მძღოლები')                  await showDriverList(chatId, 0);
         else if (msg.text === '🚨 აქტიური შეკვეთები')         await showActiveOrders(chatId);
+        else if (msg.text === '⭐ რეიტინგები')               await showRatingMenu(chatId);
         break;
       // Order flow
       case STEPS.AWAIT_PHONE:    await onPhone(chatId, msg.text);    break;
@@ -129,6 +136,10 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
     else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
+    // Ratings
+    else if (data.startsWith('adm_rat:'))          await onRatingTab(query);
+    else if (data.startsWith('adm_rat_drv:'))      await onRatingDriverDetail(query);
+    else if (data.startsWith('adm_rat_pass:'))     await onRatingPassDetail(query);
     // Active orders tabs
     else if (data.startsWith('adm_ac:'))           await onActiveTab(query);
     // History filters
@@ -422,6 +433,162 @@ async function onHistFilter(query) {
     return;
   }
   return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+}
+
+// ══ RATINGS ══════════════════════════════════════════════════════════════════
+
+const RATING_ALERT_THRESHOLD = 3.5;
+const RATING_ALERT_MIN_COUNT = 5;
+
+const RATING_NAV = { inline_keyboard: [[
+  { text: '👤 მძღოლები',  callback_data: 'adm_rat:drivers'    },
+  { text: '👥 მგზავრები', callback_data: 'adm_rat:passengers' },
+]] };
+
+function starsLine(rating) {
+  const n = parseInt(rating) || 0;
+  return '⭐'.repeat(n) + '☆'.repeat(5 - n);
+}
+
+function isAlertRating(avg, count) {
+  return parseFloat(avg) < RATING_ALERT_THRESHOLD && parseInt(count) >= RATING_ALERT_MIN_COUNT;
+}
+
+async function showRatingMenu(chatId) {
+  return bot.sendMessage(chatId, '⭐ *რეიტინგების მონიტორინგი:*', {
+    parse_mode: 'Markdown',
+    reply_markup: RATING_NAV,
+  });
+}
+
+async function onRatingTab(query) {
+  await bot.answerCallbackQuery(query.id);
+  const tab = query.data.split(':')[1];
+  if (tab === 'drivers')    return showDriverRatings(query.message.chat.id);
+  if (tab === 'passengers') return showPassengerRatings(query.message.chat.id);
+}
+
+async function showDriverRatings(chatId) {
+  const drivers = await getDriverRatings();
+  if (!drivers.length) {
+    return bot.sendMessage(chatId, '⭐ შეფასებული მძღოლი ჯერ არ არის.',
+      { reply_markup: RATING_NAV });
+  }
+
+  const rows = drivers.map(d => {
+    const avg   = parseFloat(d.avg_rating);
+    const cnt   = parseInt(d.rated_count);
+    const alert = isAlertRating(avg, cnt) ? '⚠️ ' : '';
+    return [{ text: `${alert}${d.full_name} | ⭐ ${avg.toFixed(1)} | ${cnt} შეფ.`, callback_data: `adm_rat_drv:${d.id}` }];
+  });
+  rows.push([{ text: '👥 მგზავრები →', callback_data: 'adm_rat:passengers' }]);
+
+  const alertCount = drivers.filter(d => isAlertRating(d.avg_rating, d.rated_count)).length;
+  const header = `👤 *მძღოლები* (${drivers.length})${alertCount ? ` — ⚠️ ${alertCount} პრობლ.` : ''}:`;
+
+  return bot.sendMessage(chatId, header, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function showPassengerRatings(chatId) {
+  const passengers = await getPassengerRatings();
+  if (!passengers.length) {
+    return bot.sendMessage(chatId, '⭐ შეფასებული მგზავრი ჯერ არ არის.',
+      { reply_markup: RATING_NAV });
+  }
+
+  const rows = passengers.map(p => {
+    const avg   = parseFloat(p.avg_rating);
+    const cnt   = parseInt(p.rated_count);
+    const alert = isAlertRating(avg, cnt) ? '⚠️ ' : '';
+    return [{ text: `${alert}${p.full_name} | ⭐ ${avg.toFixed(1)} | ${cnt} შეფ.`, callback_data: `adm_rat_pass:${p.id}` }];
+  });
+  rows.push([{ text: '← 👤 მძღოლები', callback_data: 'adm_rat:drivers' }]);
+
+  const alertCount = passengers.filter(p => isAlertRating(p.avg_rating, p.rated_count)).length;
+  const header = `👥 *მგზავრები* (${passengers.length})${alertCount ? ` — ⚠️ ${alertCount} პრობლ.` : ''}:`;
+
+  return bot.sendMessage(chatId, header, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function onRatingDriverDetail(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId   = query.message.chat.id;
+  const driverId = parseInt(query.data.split(':')[1], 10);
+
+  const [history, stats, driver] = await Promise.all([
+    getDriverRatingHistory(driverId),
+    getDriverStats(driverId),
+    findDriverById(driverId),
+  ]);
+
+  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.');
+  if (!history.length) return bot.sendMessage(chatId, '⭐ შეფასება ჯერ არ არის.',
+    { reply_markup: { inline_keyboard: [[{ text: '← სია', callback_data: 'adm_rat:drivers' }]] } });
+
+  const avgAll = stats?.avg_rating ? parseFloat(stats.avg_rating).toFixed(1) : '—';
+  const cntAll = parseInt(stats?.rated_count) || 0;
+  const alertNote = isAlertRating(stats?.avg_rating, cntAll)
+    ? '\n⚠️ *საჭიროებს ყურადღებას!*' : '';
+
+  const lines = history.map((o, i) => {
+    const date = new Date(o.created_at).toLocaleDateString('ka-GE');
+    const from = (o.pickup_address      || '').substring(0, 14);
+    const to   = (o.destination_address || '').substring(0, 14);
+    const who  = o.passenger_name || '📞 ტელ.';
+    return `${i + 1}. ${starsLine(o.driver_rating)} | ${date}\n    📍 ${from}→${to} | 👤 ${who}`;
+  });
+
+  return bot.sendMessage(chatId,
+    `👤 *${driver.full_name}*\n⭐ *${avgAll} avg* (სულ ${cntAll} შეფ.)${alertNote}\n\n*ბოლო ${history.length}:*\n\n${lines.join('\n')}`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '← მძღოლები', callback_data: 'adm_rat:drivers' }]] },
+    }
+  );
+}
+
+async function onRatingPassDetail(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId      = query.message.chat.id;
+  const passengerId = parseInt(query.data.split(':')[1], 10);
+
+  const [history, stats] = await Promise.all([
+    getPassengerRatingHistory(passengerId),
+    getPassengerStats(passengerId),
+  ]);
+
+  if (!history.length) return bot.sendMessage(chatId, '⭐ შეფასება ჯერ არ არის.',
+    { reply_markup: { inline_keyboard: [[{ text: '← სია', callback_data: 'adm_rat:passengers' }]] } });
+
+  const first  = history[0];
+  const name   = first.passenger_name || '?';
+  const phone  = first.passenger_phone ? ` | 📞 ${first.passenger_phone}` : '';
+  const avgAll = stats?.avg_rating ? parseFloat(stats.avg_rating).toFixed(1) : '—';
+  const cntAll = parseInt(stats?.rated_count) || 0;
+  const alertNote = isAlertRating(stats?.avg_rating, cntAll)
+    ? '\n⚠️ *პრობლემური მგზავრი!*' : '';
+
+  const lines = history.map((o, i) => {
+    const date = new Date(o.created_at).toLocaleDateString('ka-GE');
+    const from = (o.pickup_address      || '').substring(0, 14);
+    const to   = (o.destination_address || '').substring(0, 14);
+    const drv  = o.driver_name || '?';
+    return `${i + 1}. ${starsLine(o.passenger_rating)} | ${date}\n    📍 ${from}→${to} | 🚗 ${drv}`;
+  });
+
+  return bot.sendMessage(chatId,
+    `👥 *${name}*${phone}\n⭐ *${avgAll} avg* (სულ ${cntAll} შეფ.)${alertNote}\n\n*ბოლო ${history.length}:*\n\n${lines.join('\n')}`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '← მგზავრები', callback_data: 'adm_rat:passengers' }]] },
+    }
+  );
 }
 
 // ══ ACTIVE ORDERS ════════════════════════════════════════════════════════════
