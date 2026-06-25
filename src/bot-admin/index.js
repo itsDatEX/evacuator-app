@@ -315,11 +315,30 @@ async function onConfirm(query) {
 async function showStats(chatId) {
   const rows = await getOrderStats({ days: 30 });
   if (!rows.length) return bot.sendMessage(chatId, '📊 ბოლო 30 დღე — შეკვეთები არ ყოფილა.');
+
+  let grandTotal = 0, grandCompany = 0, grandDriver = 0;
   const lines = rows.map(r => {
     const src = r.source === 'phone' ? '📞 ტელეფონი' : '📱 ბოტი';
-    return `${src}\n  სულ: ${r.total}  ✅ ${r.completed}  ❌ ${r.cancelled}  ⏳ ${r.pending}\n  საშ: ${r.avg_price || '—'} ₾  |  შემოს: ${r.total_revenue} ₾`;
+    grandTotal   += parseFloat(r.total_revenue)  || 0;
+    grandCompany += parseFloat(r.company_revenue) || 0;
+    grandDriver  += parseFloat(r.driver_earnings) || 0;
+    return (
+      `${src}\n` +
+      `  სულ: ${r.total}  ✅ ${r.completed}  ❌ ${r.cancelled}  ⏳ ${r.pending}\n` +
+      `  საშ: ${r.avg_price || '—'} ₾  |  ბრუნვა: ${r.total_revenue} ₾\n` +
+      `  ├ ჩემი (საკომ.): *${r.company_revenue} ₾*\n` +
+      `  └ მძღოლების:     ${r.driver_earnings} ₾`
+    );
   });
-  return bot.sendMessage(chatId, `📊 *ბოლო 30 დღე*\n\n${lines.join('\n\n')}`, { parse_mode: 'Markdown' });
+
+  const summaryLine = rows.length > 1
+    ? `\n\n📌 *სულ ყველა წყარო:*\n  ბრუნვა: ${grandTotal.toFixed(2)} ₾\n  ├ ჩემი: *${grandCompany.toFixed(2)} ₾*\n  └ მძღოლები: ${grandDriver.toFixed(2)} ₾`
+    : '';
+
+  return bot.sendMessage(chatId,
+    `📊 *ბოლო 30 დღე*\n\n${lines.join('\n\n')}${summaryLine}`,
+    { parse_mode: 'Markdown' }
+  );
 }
 
 async function showHistory(chatId) {

@@ -398,14 +398,21 @@ async function getOrderStats({ days = 30 } = {}) {
   const { rows } = await pool.query(
     `SELECT
        source,
-       COUNT(*)                                                            AS total,
-       COUNT(*) FILTER (WHERE status = 'completed')                       AS completed,
-       COUNT(*) FILTER (WHERE status = 'cancelled')                       AS cancelled,
-       COUNT(*) FILTER (WHERE status = 'pending')                         AS pending,
-       ROUND(AVG(price) FILTER (WHERE status = 'completed')::NUMERIC, 2)  AS avg_price,
+       COUNT(*)                                                             AS total,
+       COUNT(*) FILTER (WHERE status = 'completed')                        AS completed,
+       COUNT(*) FILTER (WHERE status = 'cancelled')                        AS cancelled,
+       COUNT(*) FILTER (WHERE status = 'pending')                          AS pending,
+       ROUND(AVG(price) FILTER (WHERE status = 'completed')::NUMERIC, 2)   AS avg_price,
        COALESCE(
          ROUND(SUM(price) FILTER (WHERE status = 'completed')::NUMERIC, 2),
-       0)                                                                  AS total_revenue
+       0)                                                                   AS total_revenue,
+       COALESCE(
+         ROUND(SUM(commission_amount) FILTER (WHERE status = 'completed')::NUMERIC, 2),
+       0)                                                                   AS company_revenue,
+       COALESCE(
+         ROUND(SUM(COALESCE(price,0) - COALESCE(commission_amount,0))
+               FILTER (WHERE status = 'completed')::NUMERIC, 2),
+       0)                                                                   AS driver_earnings
      FROM orders
      WHERE created_at > NOW() - INTERVAL '1 day' * $1
      GROUP BY source
