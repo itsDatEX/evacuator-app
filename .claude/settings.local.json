@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "PowerShell(git init *)",
-      "PowerShell(git add *)"
+      "PowerShell(git add *)",
+      "PowerShell(git *)"
     ]
   }
 }

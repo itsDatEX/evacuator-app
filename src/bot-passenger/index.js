@@ -1,6 +1,6 @@
 'use strict';
 
-const TelegramBot = require('node-telegram-bot-api');
+const { TelegramBot } = require('node-telegram-bot-api');
 const config = require('../config');
 const logger = require('../shared/logger');
 const { STEPS, getSession, setStep, updateOrder, updateReg, clearOrder } = require('./sessions');
