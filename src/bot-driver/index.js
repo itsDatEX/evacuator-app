@@ -16,6 +16,7 @@ const {
   getDriverHistory, getDriverStats, getEligibleDrivers,
   ratePassenger,
 } = require('../shared/orderService');
+const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
 
 const bot = new TelegramBot(config.telegram.driverToken, { polling: true });
@@ -30,6 +31,17 @@ function mainMenuKeyboard() {
       [{ text: '📋 ჩემი შეკვეთები' },    { text: '⭐ სტატისტიკა' }],
     ],
     resize_keyboard: true,
+  };
+}
+
+function locationMethodKeyboard() {
+  return {
+    keyboard: [
+      [{ text: '📍 GPS ლოკაცია', request_location: true }],
+      [{ text: '✏️ მისამართის ჩაწერა' }],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: true,
   };
 }
 
@@ -95,14 +107,34 @@ bot.on('message', async (msg) => {
 
   try {
     switch (step) {
-      case STEPS.AWAIT_REG_NAME:   await onRegName(msg);   break;
-      case STEPS.AWAIT_REG_PHONE:  await onRegPhone(msg);  break;
-      case STEPS.AWAIT_CAR_MODEL:  await onCarModel(msg);  break;
-      case STEPS.AWAIT_PLATE:      await onPlate(msg);     break;
-      case STEPS.AWAIT_ROUTE_FROM: await onRouteFrom(msg); break;
-      case STEPS.AWAIT_ROUTE_TO:   await onRouteTo(msg);   break;
-      case STEPS.IDLE:             await onMenuAction(msg); break;
-      default: break; // AWAIT_TRUCK_TYPE, AWAIT_ROUTE_DEPARTURE: callback-only
+      case STEPS.AWAIT_REG_NAME:  await onRegName(msg);  break;
+      case STEPS.AWAIT_REG_PHONE: await onRegPhone(msg); break;
+      case STEPS.AWAIT_CAR_MODEL: await onCarModel(msg); break;
+      case STEPS.AWAIT_PLATE:     await onPlate(msg);    break;
+
+      case STEPS.AWAIT_ROUTE_FROM_METHOD:
+        if (msg.location) await onRouteFromGps(msg);
+        else if (msg.text === '✏️ მისამართის ჩაწერა') await onRouteFromMethodText(msg);
+        else bot.sendMessage(chatId, '📍 გამოიყენეთ ქვემოთ მოცემული ღილაკი.');
+        break;
+
+      case STEPS.AWAIT_ROUTE_FROM_TEXT:
+        if (msg.text) await onRouteFromText(msg);
+        break;
+
+      case STEPS.AWAIT_ROUTE_TO_METHOD:
+        if (msg.location) await onRouteToGps(msg);
+        else if (msg.text === '✏️ მისამართის ჩაწერა') await onRouteToMethodText(msg);
+        else bot.sendMessage(chatId, '📍 გამოიყენეთ ქვემოთ მოცემული ღილაკი.');
+        break;
+
+      case STEPS.AWAIT_ROUTE_TO_TEXT:
+        if (msg.text) await onRouteToText(msg);
+        break;
+
+      case STEPS.IDLE: await onMenuAction(msg); break;
+
+      default: break; // AWAIT_TRUCK_TYPE, AWAIT_ROUTE_FROM_CONFIRM, AWAIT_ROUTE_TO_CONFIRM, AWAIT_ROUTE_DEPARTURE: callback-only
     }
   } catch (err) {
     logger.error('Driver bot message error', { chatId, step, error: err.message });
@@ -114,7 +146,7 @@ bot.on('message', async (msg) => {
 
 async function onRegName(msg) {
   const chatId = msg.chat.id;
-  const name = msg.text?.trim();
+  const name   = msg.text?.trim();
   if (!name || name.length < 2) {
     return bot.sendMessage(chatId, '⚠️ შეიყვანეთ სრული სახელი (მინ. 2 სიმბოლო).');
   }
@@ -151,14 +183,26 @@ async function onRegPhone(msg) {
   });
 }
 
+async function onCarModel(msg) {
+  const chatId = msg.chat.id;
+  const model  = msg.text?.trim();
+  if (!model || model.length < 2) {
+    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ მანქანის მოდელი (მინ. 2 სიმბოლო).');
+  }
+  updateReg(chatId, { carModel: model });
+  setStep(chatId, STEPS.AWAIT_PLATE);
+  return bot.sendMessage(chatId,
+    `✅ ${model}\n\n🔢 შეიყვანეთ სანომრე ნიშანი (მაგ: GD-123-AB):`);
+}
+
 async function onPlate(msg) {
   const chatId = msg.chat.id;
-  const plate = msg.text?.trim().toUpperCase();
+  const plate  = msg.text?.trim().toUpperCase();
   if (!plate || plate.length < 3) {
     return bot.sendMessage(chatId, '⚠️ შეიყვანეთ სანომრე ნიშანი (მინ. 3 სიმბოლო).');
   }
   const { reg } = getSession(chatId);
-  const driver = await createDriver({
+  const driver  = await createDriver({
     telegramId: msg.from.id,
     username:   msg.from.username || null,
     fullName:   reg.name,
@@ -202,10 +246,9 @@ async function onMenuAction(msg) {
 
     case '🛣️ მარშრუტზე ვარ':
       clearRouteSession(chatId);
-      setStep(chatId, STEPS.AWAIT_ROUTE_FROM);
-      return bot.sendMessage(chatId, '📍 საიდან მიდიხართ?\n_(მაგ: თბილისი)_', {
-        parse_mode: 'Markdown',
-        reply_markup: { remove_keyboard: true },
+      setStep(chatId, STEPS.AWAIT_ROUTE_FROM_METHOD);
+      return bot.sendMessage(chatId, '📍 საიდან მიდიხართ? — აირჩიეთ ვარიანტი:', {
+        reply_markup: locationMethodKeyboard(),
       });
 
     case '🗑️ მარშრუტი გავასუფთავე':
@@ -221,44 +264,184 @@ async function onMenuAction(msg) {
   }
 }
 
-async function onCarModel(msg) {
+// ── Route from — GPS branch ────────────────────────────────────────────────────
+
+async function onRouteFromGps(msg) {
   const chatId = msg.chat.id;
-  const model  = msg.text?.trim();
-  if (!model || model.length < 2) {
-    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ მანქანის მოდელი (მინ. 2 სიმბოლო).');
-  }
-  updateReg(chatId, { carModel: model });
-  setStep(chatId, STEPS.AWAIT_PLATE);
-  return bot.sendMessage(chatId,
-    `✅ ${model}\n\n🔢 შეიყვანეთ სანომრე ნიშანი (მაგ: GD-123-AB):`);
+  const { latitude: lat, longitude: lng } = msg.location;
+
+  await bot.sendMessage(chatId, '⏳ ვამოწმებ ადგილს...');
+  const city = await reverseGeocode(lat, lng);
+  const label = city || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+  getSession(chatId).pending = { lat, lng, label, city };
+  await bot.sendLocation(chatId, lat, lng);
+  setStep(chatId, STEPS.AWAIT_ROUTE_FROM_CONFIRM);
+  return bot.sendMessage(
+    chatId,
+    `📍 ${label}\n\nეს სწორი ადგილია (საიდან)?`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ სწორია',          callback_data: 'geo_confirm:ok'    },
+          { text: '🔄 ხელახლა ჩაწერა', callback_data: 'geo_confirm:retry' },
+        ]],
+      },
+    }
+  );
 }
 
-// ── Route flow ─────────────────────────────────────────────────────────────────
+// ── Route from — text branch ───────────────────────────────────────────────────
 
-async function onRouteFrom(msg) {
+async function onRouteFromMethodText(msg) {
   const chatId = msg.chat.id;
-  const from   = msg.text?.trim();
-  if (!from || from.length < 2) {
-    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ საწყისი ადგილი (მინ. 2 სიმბოლო).');
-  }
-  updateRoute(chatId, { routeFrom: from });
-  setStep(chatId, STEPS.AWAIT_ROUTE_TO);
-  return bot.sendMessage(chatId, `✅ საიდან: *${from}*\n\n🏁 სად მიდიხართ?`, {
-    parse_mode: 'Markdown',
-  });
+  setStep(chatId, STEPS.AWAIT_ROUTE_FROM_TEXT);
+  return bot.sendMessage(
+    chatId,
+    '✏️ ჩაწერეთ საიდან მიდიხართ:\n_(მაგ: თბილისი, ან ჭავჭავაძის 1)_',
+    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+  );
 }
 
-async function onRouteTo(msg) {
+async function onRouteFromText(msg) {
   const chatId = msg.chat.id;
-  const to     = msg.text?.trim();
-  if (!to || to.length < 2) {
-    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ დანიშნულება (მინ. 2 სიმბოლო).');
+  const query  = msg.text?.trim();
+  if (!query || query.length < 2) {
+    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ ადგილი (მინ. 2 სიმბოლო).');
   }
-  updateRoute(chatId, { routeTo: to });
+  await bot.sendMessage(chatId, '⏳ ვეძებ მისამართს...');
+  const result = await forwardGeocode(query);
+  if (!result) {
+    return bot.sendMessage(chatId, '❌ ადგილი ვერ მოიძებნა. სცადეთ სხვა ფორმულირება:');
+  }
+  getSession(chatId).pending = { lat: result.lat, lng: result.lng, label: result.displayName, city: result.city };
+  await bot.sendLocation(chatId, result.lat, result.lng);
+  setStep(chatId, STEPS.AWAIT_ROUTE_FROM_CONFIRM);
+  return bot.sendMessage(
+    chatId,
+    `📍 ${result.displayName}\n\nეს სწორი ადგილია (საიდან)?`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ სწორია',          callback_data: 'geo_confirm:ok'    },
+          { text: '🔄 ხელახლა ჩაწერა', callback_data: 'geo_confirm:retry' },
+        ]],
+      },
+    }
+  );
+}
+
+// ── Route to — GPS branch ──────────────────────────────────────────────────────
+
+async function onRouteToGps(msg) {
+  const chatId = msg.chat.id;
+  const { latitude: lat, longitude: lng } = msg.location;
+
+  await bot.sendMessage(chatId, '⏳ ვამოწმებ ადგილს...');
+  const city  = await reverseGeocode(lat, lng);
+  const label = city || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+  getSession(chatId).pending = { lat, lng, label, city };
+  await bot.sendLocation(chatId, lat, lng);
+  setStep(chatId, STEPS.AWAIT_ROUTE_TO_CONFIRM);
+  return bot.sendMessage(
+    chatId,
+    `📍 ${label}\n\nეს სწორი ადგილია (სად)?`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ სწორია',          callback_data: 'geo_confirm:ok'    },
+          { text: '🔄 ხელახლა ჩაწერა', callback_data: 'geo_confirm:retry' },
+        ]],
+      },
+    }
+  );
+}
+
+// ── Route to — text branch ─────────────────────────────────────────────────────
+
+async function onRouteToMethodText(msg) {
+  const chatId = msg.chat.id;
+  setStep(chatId, STEPS.AWAIT_ROUTE_TO_TEXT);
+  return bot.sendMessage(
+    chatId,
+    '✏️ ჩაწერეთ სად მიდიხართ:\n_(მაგ: ბათუმი, ან სამტრედია)_',
+    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+  );
+}
+
+async function onRouteToText(msg) {
+  const chatId = msg.chat.id;
+  const query  = msg.text?.trim();
+  if (!query || query.length < 2) {
+    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ ადგილი (მინ. 2 სიმბოლო).');
+  }
+  await bot.sendMessage(chatId, '⏳ ვეძებ მისამართს...');
+  const result = await forwardGeocode(query);
+  if (!result) {
+    return bot.sendMessage(chatId, '❌ ადგილი ვერ მოიძებნა. სცადეთ სხვა ფორმულირება:');
+  }
+  getSession(chatId).pending = { lat: result.lat, lng: result.lng, label: result.displayName, city: result.city };
+  await bot.sendLocation(chatId, result.lat, result.lng);
+  setStep(chatId, STEPS.AWAIT_ROUTE_TO_CONFIRM);
+  return bot.sendMessage(
+    chatId,
+    `📍 ${result.displayName}\n\nეს სწორი ადგილია (სად)?`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ სწორია',          callback_data: 'geo_confirm:ok'    },
+          { text: '🔄 ხელახლა ჩაწერა', callback_data: 'geo_confirm:retry' },
+        ]],
+      },
+    }
+  );
+}
+
+// ── Driver geo confirmation callback ───────────────────────────────────────────
+
+async function onDriverGeoConfirm(query) {
+  const chatId  = query.message.chat.id;
+  const session = getSession(chatId);
+  const { step } = session;
+  const action  = query.data.split(':')[1]; // 'ok' | 'retry'
+
+  await bot.answerCallbackQuery(query.id);
+
+  if (action === 'retry') {
+    if (step === STEPS.AWAIT_ROUTE_FROM_CONFIRM) {
+      setStep(chatId, STEPS.AWAIT_ROUTE_FROM_METHOD);
+      return bot.sendMessage(chatId, '📍 საიდან მიდიხართ? — აირჩიეთ ვარიანტი ხელახლა:', {
+        reply_markup: locationMethodKeyboard(),
+      });
+    }
+    setStep(chatId, STEPS.AWAIT_ROUTE_TO_METHOD);
+    return bot.sendMessage(chatId, '📍 სად მიდიხართ? — აირჩიეთ ვარიანტი ხელახლა:', {
+      reply_markup: locationMethodKeyboard(),
+    });
+  }
+
+  // action === 'ok'
+  const { label, city } = session.pending;
+  const routeText = city || label;
+  session.pending = null;
+
+  if (step === STEPS.AWAIT_ROUTE_FROM_CONFIRM) {
+    updateRoute(chatId, { routeFrom: routeText });
+    setStep(chatId, STEPS.AWAIT_ROUTE_TO_METHOD);
+    return bot.sendMessage(
+      chatId,
+      `✅ საიდან: *${routeText}*\n\n🏁 სად მიდიხართ? — აირჩიეთ ვარიანტი:`,
+      { parse_mode: 'Markdown', reply_markup: locationMethodKeyboard() }
+    );
+  }
+
+  // AWAIT_ROUTE_TO_CONFIRM
+  updateRoute(chatId, { routeTo: routeText });
   setStep(chatId, STEPS.AWAIT_ROUTE_DEPARTURE);
   return bot.sendMessage(
     chatId,
-    `✅ სად: *${to}*\n\n⏰ როდის გამოდიხართ?`,
+    `✅ სად: *${routeText}*\n\n⏰ როდის გამოდიხართ?`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -281,7 +464,12 @@ bot.on('callback_query', async (query) => {
   const data   = query.data;
 
   try {
-    if (data.startsWith('reg_truck:') && step === STEPS.AWAIT_TRUCK_TYPE) {
+    if (data.startsWith('geo_confirm:') && (
+      step === STEPS.AWAIT_ROUTE_FROM_CONFIRM ||
+      step === STEPS.AWAIT_ROUTE_TO_CONFIRM
+    )) {
+      await onDriverGeoConfirm(query);
+    } else if (data.startsWith('reg_truck:') && step === STEPS.AWAIT_TRUCK_TYPE) {
       await onRegTruckType(query);
     } else if (data.startsWith('depart:') && step === STEPS.AWAIT_ROUTE_DEPARTURE) {
       await onRouteDepart(query);
@@ -304,7 +492,7 @@ bot.on('callback_query', async (query) => {
 
 async function onRegTruckType(query) {
   const chatId    = query.message.chat.id;
-  const truckType = query.data.split(':')[1]; // 'regular' | 'crane'
+  const truckType = query.data.split(':')[1];
   updateReg(chatId, { truckType });
   setStep(chatId, STEPS.AWAIT_CAR_MODEL);
   await bot.answerCallbackQuery(query.id);
@@ -370,7 +558,6 @@ async function onAccept(query) {
   const order = await acceptOrder(orderId, driver.id);
   if (!order) {
     await bot.answerCallbackQuery(query.id, { text: 'ℹ️ შეკვეთა უკვე სხვამ აიღო.' });
-    // Remove stale buttons from this driver's message
     return bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
       chat_id:    chatId,
       message_id: query.message.message_id,
@@ -379,14 +566,11 @@ async function onAccept(query) {
 
   await bot.answerCallbackQuery(query.id, { text: '✅ შეკვეთა მიღებულია!' });
 
-  // Mark unavailable while on job; store active order in session
   await setAvailability(driver.telegram_id, false);
   getSession(chatId).activeOrderId = orderId;
 
-  // Notify passenger
   await notifier.notifyPassengerOrderAccepted(order, driver, order.passenger_telegram_id);
 
-  // Notify other eligible drivers that the order is gone
   const others = await getEligibleDrivers(
     order.can_roll,
     order.payment_method,
@@ -397,7 +581,6 @@ async function onAccept(query) {
   );
   await notifier.notifyDriversOrderTaken(orderId, driver.telegram_id, others);
 
-  // Replace accept/skip buttons on the original notification
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
     chat_id:    chatId,
     message_id: query.message.message_id,
@@ -454,20 +637,18 @@ async function onComplete(query) {
       { reply_markup: mainMenuKeyboard() });
   }
 
-  // Free up driver and clear active order
   await setAvailability(driver.telegram_id, true);
   getSession(chatId).activeOrderId = null;
 
   await bot.answerCallbackQuery(query.id, { text: '✅ შეასრულდა!' });
 
-  // Remove complete button
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
     chat_id:    chatId,
     message_id: query.message.message_id,
   }).catch(() => {});
 
-  const payLabel    = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
-  const sign        = result.balanceDelta >= 0 ? '+' : '';
+  const payLabel = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
+  const sign     = result.balanceDelta >= 0 ? '+' : '';
 
   await bot.sendMessage(
     chatId,
@@ -499,7 +680,7 @@ async function onComplete(query) {
 
 async function onRatePassenger(query) {
   const chatId  = query.message.chat.id;
-  const parts   = query.data.split(':'); // rate:orderId:score
+  const parts   = query.data.split(':');
   const orderId = parseInt(parts[1], 10);
   const score   = parseInt(parts[2], 10);
 
