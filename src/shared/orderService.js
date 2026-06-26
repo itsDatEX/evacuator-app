@@ -393,6 +393,25 @@ async function getAdminHistory({ status = null, days = null, limit = 20, offset 
   return rows;
 }
 
+async function getCompletedOrdersForExport(from, to) {
+  const { rows } = await pool.query(`
+    SELECT
+      o.id, o.created_at,
+      o.pickup_address, o.destination_address,
+      o.price, o.commission_amount, o.payment_method,
+      o.source, o.caller_phone,
+      p.full_name AS passenger_name, p.phone AS passenger_phone,
+      d.full_name AS driver_name,   d.phone AS driver_phone
+    FROM orders o
+    LEFT JOIN passengers p ON o.passenger_id = p.id
+    LEFT JOIN drivers    d ON o.driver_id    = d.id
+    WHERE o.status = 'completed'
+      AND o.created_at >= $1 AND o.created_at < $2
+    ORDER BY o.created_at ASC
+  `, [from, to]);
+  return rows;
+}
+
 // ── Rating queries ────────────────────────────────────────────────────────────
 
 async function getDriverRatings() {
@@ -631,4 +650,5 @@ module.exports = {
   getPassengerRatingHistory,
   getPassengerStats,
   getPassengerOrderStats,
+  getCompletedOrdersForExport,
 };

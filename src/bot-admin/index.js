@@ -1,19 +1,24 @@
 'use strict';
 
+const XLSX = require('xlsx');
+const fs   = require('fs');
+const os   = require('os');
+const path = require('path');
+
 const { TelegramBot } = require('node-telegram-bot-api');
 const config      = require('../config');
 const logger      = require('../shared/logger');
 const {
   STEPS, getSession, setStep,
-  updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt,
-  clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt,
+  updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt, updateBroadcast,
+  clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt, clearBroadcast,
 } = require('./sessions');
 const {
   createOrder, getOrderStats, getAdminHistory, getActiveOrders,
   getEligibleDrivers, getDriverBalances, recordWithdrawal, getDriverStats,
   getDriverRatings, getDriverRatingHistory,
   getPassengerRatings, getPassengerRatingHistory, getPassengerStats,
-  getPassengerOrderStats,
+  getPassengerOrderStats, getCompletedOrdersForExport,
 } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const {
@@ -21,12 +26,14 @@ const {
   getAllPassengers, countPassengers,
   findPassengerById, findPassengerByPhone,
   updatePassengerField, togglePassengerActive,
+  getActivePassengerTelegramIds,
 } = require('../shared/passengerService');
 const {
   addBonusBalance,
   getAllDrivers, countDrivers,
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive,
+  getActiveDriverTelegramIds,
 } = require('../shared/driverService');
 const { getBonusEnabled, toggleBonusEnabled } = require('../shared/configService');
 const notifier = require('../shared/notifier');
@@ -54,6 +61,7 @@ function mainMenu() {
       [{ text: '🎁 ბონუსები' },       { text: '💰 ბალანსები' }],
       [{ text: '🚚 მძღოლები' },       { text: '🚨 აქტიური შეკვეთები' }],
       [{ text: '⭐ რეიტინგები' },     { text: '👥 მგზავრები' }],
+      [{ text: '📢 ეცნობოთ ყველას' }, { text: '📄 ექსპორტი' }],
     ],
     resize_keyboard: true,
   };
@@ -103,6 +111,8 @@ bot.on('message', guard(async (msg) => {
         else if (msg.text === '🚨 აქტიური შეკვეთები')         await showActiveOrders(chatId);
         else if (msg.text === '⭐ რეიტინგები')               await showRatingMenu(chatId);
         else if (msg.text === '👥 მგზავრები')               await showPassengerList(chatId, 0);
+        else if (msg.text === '📢 ეცნობოთ ყველას')         await showBroadcastMenu(chatId);
+        else if (msg.text === '📄 ექსპორტი')               await showExportMenu(chatId);
         break;
       // Order flow
       case STEPS.AWAIT_PHONE:    await onPhone(chatId, msg.text);    break;
@@ -122,8 +132,10 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_DRV_SEARCH:      await onDriverSearch(chatId, msg.text);      break;
       case STEPS.AWAIT_DRV_EDIT_FIELD:  await onDriverEditValue(chatId, msg.text);   break;
       // Passenger management
-      case STEPS.AWAIT_PASS_SEARCH:     await onPassengerSearch(chatId, msg.text);   break;
-      case STEPS.AWAIT_PASS_EDIT_FIELD: await onPassengerEditValue(chatId, msg.text);break;
+      case STEPS.AWAIT_PASS_SEARCH:     await onPassengerSearch(chatId, msg.text);    break;
+      case STEPS.AWAIT_PASS_EDIT_FIELD: await onPassengerEditValue(chatId, msg.text); break;
+      // Broadcast
+      case STEPS.AWAIT_BROADCAST_TEXT:  await onBroadcastText(chatId, msg.text);      break;
       default: break;
     }
   } catch (err) {
@@ -146,6 +158,10 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
     else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
+    // Broadcast
+    else if (data.startsWith('adm_bc:'))           await onBroadcastTarget(query);
+    // Export
+    else if (data.startsWith('adm_exp:'))          await onExport(query);
     // Ratings
     else if (data.startsWith('adm_rat:'))          await onRatingTab(query);
     else if (data.startsWith('adm_rat_drv:'))      await onRatingDriverDetail(query);
@@ -450,6 +466,136 @@ async function onHistFilter(query) {
     return;
   }
   return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+}
+
+// ══ BROADCAST ════════════════════════════════════════════════════════════════
+
+async function showBroadcastMenu(chatId) {
+  return bot.sendMessage(chatId, '📢 *ვის გაუგზავნოთ?*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[
+      { text: '👤 მძღოლებს',   callback_data: 'adm_bc:drivers'    },
+      { text: '🧍 მგზავრებს',  callback_data: 'adm_bc:passengers' },
+    ]] },
+  });
+}
+
+async function onBroadcastTarget(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const target = query.data.split(':')[1];
+  updateBroadcast(chatId, { target });
+  setStep(chatId, STEPS.AWAIT_BROADCAST_TEXT);
+  const label = target === 'drivers' ? '👤 მძღოლებისთვის' : '🧍 მგზავრებისთვის';
+  return bot.sendMessage(chatId,
+    `${label}\n\n✏️ ჩაწერეთ შეტყობინების ტექსტი (Markdown მხარდაჭერილია) ან /cancel:`,
+    { reply_markup: { remove_keyboard: true } }
+  );
+}
+
+async function onBroadcastText(chatId, text) {
+  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ტექსტი არ შეიძლება ცარიელი იყოს:');
+  const { broadcast } = getSession(chatId);
+  const target = broadcast.target;
+  clearBroadcast(chatId);
+
+  const ids = target === 'drivers'
+    ? await getActiveDriverTelegramIds()
+    : await getActivePassengerTelegramIds();
+
+  if (!ids.length) {
+    return bot.sendMessage(chatId, '⚠️ აქტიური მომხმარებელი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  }
+
+  await bot.sendMessage(chatId, `📤 ვგზავნი ${ids.length} მომხმარებელს...`);
+
+  let sent = 0, failed = 0;
+  for (const telegramId of ids) {
+    try {
+      await bot.sendMessage(telegramId, text, { parse_mode: 'Markdown' });
+      sent++;
+    } catch {
+      failed++;
+    }
+    await new Promise(r => setTimeout(r, 50)); // ~20 msg/sec, Telegram rate limit safe
+  }
+
+  return bot.sendMessage(chatId,
+    `✅ *გაიგზავნა: ${sent}*${failed ? `\n❌ ვერ გაიგზავნა: ${failed}` : ''}`,
+    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+  );
+}
+
+// ══ EXPORT ════════════════════════════════════════════════════════════════════
+
+async function showExportMenu(chatId) {
+  return bot.sendMessage(chatId, '📄 *ექსპორტი — პერიოდი:*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[
+      { text: '📅 ეს თვე',      callback_data: 'adm_exp:current'  },
+      { text: '📅 გასული თვე',  callback_data: 'adm_exp:previous' },
+    ]] },
+  });
+}
+
+async function onExport(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const period = query.data.split(':')[1];
+
+  const now    = new Date();
+  let from, to, label;
+
+  if (period === 'current') {
+    from  = new Date(now.getFullYear(), now.getMonth(), 1);
+    to    = now;
+    label = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  } else {
+    const y   = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+    const m   = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
+    from      = new Date(y, m, 1);
+    to        = new Date(now.getFullYear(), now.getMonth(), 1);
+    label     = `${y}-${String(m + 1).padStart(2, '0')}`;
+  }
+
+  await bot.sendMessage(chatId, `⏳ ვამზადებ ექსპორტს (${label})...`);
+
+  const orders = await getCompletedOrdersForExport(from, to);
+
+  if (!orders.length) {
+    return bot.sendMessage(chatId, `📄 ${label} — completed შეკვეთა არ არის.`, { reply_markup: mainMenu() });
+  }
+
+  const rows = orders.map(o => ({
+    'ID':           o.id,
+    'თარიღი':       new Date(o.created_at).toLocaleDateString('ka-GE'),
+    'საათი':        new Date(o.created_at).toLocaleTimeString('ka-GE', { hour: '2-digit', minute: '2-digit' }),
+    'მგზავარი':     o.passenger_name || o.caller_phone || '—',
+    'მძღოლი':       o.driver_name    || '—',
+    'მძღოლი ტელ.': o.driver_phone   || '—',
+    'საიდან':       o.pickup_address       || '—',
+    'სად':          o.destination_address  || '—',
+    'ფასი (₾)':    parseFloat(o.price)            || 0,
+    'საკომ. (₾)':  parseFloat(o.commission_amount) || 0,
+    'გადახდა':      o.payment_method === 'card' ? 'ბარათი' : 'ნაღდი',
+    'წყარო':        o.source === 'phone' ? 'ტელეფ.' : 'ბოტი',
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'შეკვეთები');
+
+  const tmpFile = path.join(os.tmpdir(), `evacuator_${label}_${Date.now()}.xlsx`);
+  XLSX.writeFile(wb, tmpFile);
+
+  try {
+    await bot.sendDocument(chatId, fs.createReadStream(tmpFile), {}, {
+      filename:    `evacuator_${label}.xlsx`,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+  } finally {
+    fs.unlink(tmpFile, () => {});
+  }
 }
 
 // ══ RATINGS ══════════════════════════════════════════════════════════════════

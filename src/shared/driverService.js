@@ -103,6 +103,13 @@ async function addBonusBalance(telegramId, amount) {
   return rows[0] || null;
 }
 
+async function getActiveDriverTelegramIds() {
+  const { rows } = await pool.query(
+    'SELECT telegram_id FROM drivers WHERE is_active = true'
+  );
+  return rows.map(r => r.telegram_id);
+}
+
 module.exports = {
   findByTelegramId, createDriver,
   setAvailability, setRoute, clearRoute,
@@ -110,4 +117,5 @@ module.exports = {
   getAllDrivers, countDrivers,
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive,
+  getActiveDriverTelegramIds,
 };

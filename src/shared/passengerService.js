@@ -94,9 +94,17 @@ async function togglePassengerActive(passengerId) {
   return rows[0] || null;
 }
 
+async function getActivePassengerTelegramIds() {
+  const { rows } = await pool.query(
+    'SELECT telegram_id FROM passengers WHERE is_active IS NOT FALSE'
+  );
+  return rows.map(r => r.telegram_id);
+}
+
 module.exports = {
   findByTelegramId, createPassenger, addDiscount, consumeDiscount,
   getAllPassengers, countPassengers,
   findPassengerById, findPassengerByPhone,
   updatePassengerField, togglePassengerActive,
+  getActivePassengerTelegramIds,
 };

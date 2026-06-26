@@ -24,13 +24,15 @@ const STEPS = {
   // Passenger management
   AWAIT_PASS_SEARCH:     'AWAIT_PASS_SEARCH',
   AWAIT_PASS_EDIT_FIELD: 'AWAIT_PASS_EDIT_FIELD',
+  // Broadcast
+  AWAIT_BROADCAST_TEXT:  'AWAIT_BROADCAST_TEXT',
 };
 
 const sessions = new Map();
 
 function getSession(chatId) {
   if (!sessions.has(chatId)) {
-    sessions.set(chatId, { step: STEPS.IDLE, order: {}, bonus: {}, wd: {}, drvMgmt: {}, passMgmt: {} });
+    sessions.set(chatId, { step: STEPS.IDLE, order: {}, bonus: {}, wd: {}, drvMgmt: {}, passMgmt: {}, broadcast: {} });
   }
   return sessions.get(chatId);
 }
@@ -75,8 +77,15 @@ function clearPassMgmt(chatId) {
   s.step      = STEPS.IDLE;
 }
 
+function updateBroadcast(chatId, data) { Object.assign(getSession(chatId).broadcast, data); }
+function clearBroadcast(chatId) {
+  const s      = getSession(chatId);
+  s.broadcast  = {};
+  s.step       = STEPS.IDLE;
+}
+
 module.exports = {
   STEPS, getSession, setStep,
-  updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt,
-  clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt,
+  updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt, updateBroadcast,
+  clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt, clearBroadcast,
 };
