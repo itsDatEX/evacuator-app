@@ -2,12 +2,17 @@ const { google } = require('googleapis');
 const config = require('../config');
 const logger = require('./logger');
 
-const auth = new google.auth.JWT(
-  config.google.serviceAccountEmail,
-  null,
-  config.google.privateKey,
-  ['https://www.googleapis.com/auth/spreadsheets.readonly']
-);
+if (!config.google.serviceAccountEmail || !config.google.privateKey) {
+  throw new Error('Missing GOOGLE_SERVICE_ACCOUNT_EMAIL or GOOGLE_PRIVATE_KEY in environment');
+}
+
+const auth = new google.auth.GoogleAuth({
+  credentials: {
+    client_email: config.google.serviceAccountEmail,
+    private_key:  config.google.privateKey,
+  },
+  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+});
 
 const sheets = google.sheets({ version: 'v4', auth });
 
