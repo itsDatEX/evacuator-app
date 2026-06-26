@@ -463,6 +463,17 @@ async function getPassengerRatingHistory(passengerId) {
   return rows;
 }
 
+async function getPassengerOrderStats(passengerId) {
+  const { rows } = await pool.query(`
+    SELECT
+      COUNT(*)                                     AS total,
+      COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+      COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled
+    FROM orders WHERE passenger_id = $1
+  `, [passengerId]);
+  return rows[0];
+}
+
 async function getPassengerStats(passengerId) {
   const { rows } = await pool.query(`
     SELECT
@@ -619,4 +630,5 @@ module.exports = {
   getPassengerRatings,
   getPassengerRatingHistory,
   getPassengerStats,
+  getPassengerOrderStats,
 };

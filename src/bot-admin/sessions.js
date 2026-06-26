@@ -21,13 +21,16 @@ const STEPS = {
   // Driver management
   AWAIT_DRV_SEARCH:      'AWAIT_DRV_SEARCH',
   AWAIT_DRV_EDIT_FIELD:  'AWAIT_DRV_EDIT_FIELD',
+  // Passenger management
+  AWAIT_PASS_SEARCH:     'AWAIT_PASS_SEARCH',
+  AWAIT_PASS_EDIT_FIELD: 'AWAIT_PASS_EDIT_FIELD',
 };
 
 const sessions = new Map();
 
 function getSession(chatId) {
   if (!sessions.has(chatId)) {
-    sessions.set(chatId, { step: STEPS.IDLE, order: {}, bonus: {}, wd: {}, drvMgmt: {} });
+    sessions.set(chatId, { step: STEPS.IDLE, order: {}, bonus: {}, wd: {}, drvMgmt: {}, passMgmt: {} });
   }
   return sessions.get(chatId);
 }
@@ -65,8 +68,15 @@ function clearDrvMgmt(chatId) {
   s.step    = STEPS.IDLE;
 }
 
+function updatePassMgmt(chatId, data) { Object.assign(getSession(chatId).passMgmt, data); }
+function clearPassMgmt(chatId) {
+  const s     = getSession(chatId);
+  s.passMgmt  = {};
+  s.step      = STEPS.IDLE;
+}
+
 module.exports = {
   STEPS, getSession, setStep,
-  updateOrder, updateBonus, updateWd, updateDrvMgmt,
-  clearOrder, clearBonus, clearWd, clearDrvMgmt,
+  updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt,
+  clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt,
 };

@@ -566,6 +566,13 @@ async function onConfirm(query) {
   if (!passenger) {
     return bot.sendMessage(chatId, '⚠️ მომხმარებელი ვერ მოიძებნა. სცადეთ /start.');
   }
+  if (passenger.is_active === false) {
+    clearOrder(chatId);
+    return bot.sendMessage(chatId,
+      '🚫 თქვენი ანგარიში დაბლოკილია. admin-თან დაუკავშირდით.',
+      { reply_markup: mainMenuKeyboard() }
+    );
+  }
 
   const draft = { ...getSession(chatId).order };
 

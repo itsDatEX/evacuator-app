@@ -5,17 +5,23 @@ const config      = require('../config');
 const logger      = require('../shared/logger');
 const {
   STEPS, getSession, setStep,
-  updateOrder, updateBonus, updateWd, updateDrvMgmt,
-  clearOrder, clearBonus, clearWd, clearDrvMgmt,
+  updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt,
+  clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt,
 } = require('./sessions');
 const {
   createOrder, getOrderStats, getAdminHistory, getActiveOrders,
   getEligibleDrivers, getDriverBalances, recordWithdrawal, getDriverStats,
   getDriverRatings, getDriverRatingHistory,
   getPassengerRatings, getPassengerRatingHistory, getPassengerStats,
+  getPassengerOrderStats,
 } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
-const { addDiscount }                       = require('../shared/passengerService');
+const {
+  addDiscount,
+  getAllPassengers, countPassengers,
+  findPassengerById, findPassengerByPhone,
+  updatePassengerField, togglePassengerActive,
+} = require('../shared/passengerService');
 const {
   addBonusBalance,
   getAllDrivers, countDrivers,
@@ -47,7 +53,7 @@ function mainMenu() {
       [{ text: '📊 სტატისტიკა' },    { text: '📋 ბოლო შეკვეთები' }],
       [{ text: '🎁 ბონუსები' },       { text: '💰 ბალანსები' }],
       [{ text: '🚚 მძღოლები' },       { text: '🚨 აქტიური შეკვეთები' }],
-      [{ text: '⭐ რეიტინგები' }],
+      [{ text: '⭐ რეიტინგები' },     { text: '👥 მგზავრები' }],
     ],
     resize_keyboard: true,
   };
@@ -96,6 +102,7 @@ bot.on('message', guard(async (msg) => {
         else if (msg.text === '🚚 მძღოლები')                  await showDriverList(chatId, 0);
         else if (msg.text === '🚨 აქტიური შეკვეთები')         await showActiveOrders(chatId);
         else if (msg.text === '⭐ რეიტინგები')               await showRatingMenu(chatId);
+        else if (msg.text === '👥 მგზავრები')               await showPassengerList(chatId, 0);
         break;
       // Order flow
       case STEPS.AWAIT_PHONE:    await onPhone(chatId, msg.text);    break;
@@ -112,8 +119,11 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_WD_AMOUNT:    await onWdAmount(chatId, msg.text);      break;
       case STEPS.AWAIT_WD_NOTE:      await onWdNote(chatId, msg.text);        break;
       // Driver management
-      case STEPS.AWAIT_DRV_SEARCH:     await onDriverSearch(chatId, msg.text);    break;
-      case STEPS.AWAIT_DRV_EDIT_FIELD: await onDriverEditValue(chatId, msg.text); break;
+      case STEPS.AWAIT_DRV_SEARCH:      await onDriverSearch(chatId, msg.text);      break;
+      case STEPS.AWAIT_DRV_EDIT_FIELD:  await onDriverEditValue(chatId, msg.text);   break;
+      // Passenger management
+      case STEPS.AWAIT_PASS_SEARCH:     await onPassengerSearch(chatId, msg.text);   break;
+      case STEPS.AWAIT_PASS_EDIT_FIELD: await onPassengerEditValue(chatId, msg.text);break;
       default: break;
     }
   } catch (err) {
@@ -144,6 +154,13 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_ac:'))           await onActiveTab(query);
     // History filters
     else if (data.startsWith('adm_hist:'))         await onHistFilter(query);
+    // Passenger management
+    else if (data.startsWith('adm_pass_list:'))    await onPassList(query);
+    else if (data === 'adm_pass_search')           await onPassSearchStart(query);
+    else if (data.startsWith('adm_pass_edit:'))    await onPassEditStart(query);
+    else if (data.startsWith('adm_pass_toggle:'))  await onPassToggle(query);
+    else if (data === 'adm_pass_back')             { await bot.answerCallbackQuery(query.id); await showPassengerList(chatId, 0); }
+    else if (data.startsWith('adm_pass:'))         await onPassProfile(query);
     // Driver management
     else if (data.startsWith('adm_drv_list:'))     await onDrvList(query);
     else if (data === 'adm_drv_search')            await onDrvSearchStart(query);
@@ -854,6 +871,147 @@ async function onWdNote(chatId, text) {
     `✅ გატანა ჩაიწერა\n👤 *${driver.full_name}*\n➖ ${wd.amount} ₾${note ? `\n📝 ${note}` : ''}\n💰 ახალი ბალანსი: *${newBalance.toFixed(2)} ₾*`,
     { parse_mode: 'Markdown', reply_markup: mainMenu() }
   );
+}
+
+// ══ PASSENGER MANAGEMENT ═════════════════════════════════════════════════════
+
+const PASS_PAGE_SIZE = 8;
+
+const PASS_FIELD_LABELS = { full_name: 'სახელი', phone: 'ტელეფონი' };
+
+async function showPassengerList(chatId, page = 0) {
+  const [passengers, total] = await Promise.all([
+    getAllPassengers({ limit: PASS_PAGE_SIZE, offset: page * PASS_PAGE_SIZE }),
+    countPassengers(),
+  ]);
+
+  if (!passengers.length) return bot.sendMessage(chatId, '👥 მგზავრები ვერ მოიძებნა.');
+
+  const rows = passengers.map(p => {
+    const active = p.is_active !== false ? '✅' : '🔴';
+    const name   = p.full_name || p.phone || '?';
+    return [{ text: `${active} ${name}`, callback_data: `adm_pass:${p.id}` }];
+  });
+
+  const totalPages = Math.ceil(total / PASS_PAGE_SIZE);
+  const navRow     = [];
+  if (page > 0)               navRow.push({ text: '← წინა',     callback_data: `adm_pass_list:${page - 1}` });
+  navRow.push({ text: `${page + 1}/${totalPages}`, callback_data: 'noop' });
+  if (page + 1 < totalPages)  navRow.push({ text: 'შემდეგი →', callback_data: `adm_pass_list:${page + 1}` });
+
+  rows.push([{ text: '🔍 ძებნა (ID ან ტელეფონი)', callback_data: 'adm_pass_search' }]);
+  if (navRow.length > 1) rows.push(navRow);
+
+  return bot.sendMessage(chatId, `👥 *მგზავრები* (სულ: ${total}):`, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function showPassengerProfile(chatId, passengerId) {
+  const [p, ostats] = await Promise.all([
+    findPassengerById(passengerId),
+    getPassengerOrderStats(passengerId),
+  ]);
+  if (!p) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.');
+
+  const statusLabel = p.is_active !== false ? '✅ აქტიური' : '🔴 დაბლოკილი';
+  const regDate     = new Date(p.created_at).toLocaleDateString('ka-GE');
+  const disc        = parseFloat(p.discount_available) || 0;
+
+  const text = [
+    `👥 *${p.full_name || '—'}*`,
+    `📱 Telegram ID: \`${p.telegram_id}\``,
+    `📞 ტელეფონი: ${p.phone || '—'}`,
+    `📅 რეგ.: ${regDate}`,
+    `📦 შეკვეთები: ${ostats.total} სულ | ✅ ${ostats.completed} | ❌ ${ostats.cancelled}`,
+    disc > 0 ? `💰 ფასდაკლება: ${disc} ₾` : null,
+    statusLabel,
+  ].filter(Boolean).join('\n');
+
+  const toggleLabel = p.is_active !== false ? '🔴 გაბლოკვა' : '🟢 განბლოკვა';
+
+  return bot.sendMessage(chatId, text, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✏️ სახელი',    callback_data: `adm_pass_edit:${p.id}:full_name` },
+          { text: '✏️ ტელეფონი', callback_data: `adm_pass_edit:${p.id}:phone`     },
+        ],
+        [{ text: toggleLabel,  callback_data: `adm_pass_toggle:${p.id}` }],
+        [{ text: '← სია',      callback_data: 'adm_pass_back'           }],
+      ],
+    },
+  });
+}
+
+async function onPassList(query) {
+  await bot.answerCallbackQuery(query.id);
+  const page = parseInt(query.data.split(':')[1], 10) || 0;
+  return showPassengerList(query.message.chat.id, page);
+}
+
+async function onPassSearchStart(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  clearPassMgmt(chatId);
+  setStep(chatId, STEPS.AWAIT_PASS_SEARCH);
+  return bot.sendMessage(chatId, '🔍 მგზავრის ID (რიცხვი) ან ტელეფონი (ან /cancel):',
+    { reply_markup: { remove_keyboard: true } });
+}
+
+async function onPassengerSearch(chatId, text) {
+  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ჩაწერეთ ID ან ტელეფონი:');
+  const trimmed = text.trim();
+  const asInt   = /^\d+$/.test(trimmed) ? parseInt(trimmed, 10) : null;
+  const p       = asInt
+    ? ((await findPassengerById(asInt)) || (await findPassengerByPhone(trimmed)))
+    : await findPassengerByPhone(trimmed);
+
+  clearPassMgmt(chatId);
+  if (!p) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  return showPassengerProfile(chatId, p.id);
+}
+
+async function onPassProfile(query) {
+  await bot.answerCallbackQuery(query.id);
+  const id = parseInt(query.data.split(':')[1], 10);
+  return showPassengerProfile(query.message.chat.id, id);
+}
+
+async function onPassEditStart(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const parts  = query.data.split(':');   // adm_pass_edit:{id}:{field}
+  const id     = parseInt(parts[1], 10);
+  const field  = parts[2];
+  updatePassMgmt(chatId, { passengerId: id, editField: field });
+  setStep(chatId, STEPS.AWAIT_PASS_EDIT_FIELD);
+  return bot.sendMessage(chatId,
+    `✏️ ახალი მნიშვნელობა — *${PASS_FIELD_LABELS[field] || field}* (ან /cancel):`,
+    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+  );
+}
+
+async function onPassengerEditValue(chatId, text) {
+  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ მნიშვნელობა არ შეიძლება ცარიელი იყოს:');
+  const { passMgmt } = getSession(chatId);
+  const updated = await updatePassengerField(passMgmt.passengerId, passMgmt.editField, text.trim());
+  clearPassMgmt(chatId);
+  if (!updated) return bot.sendMessage(chatId, '⚠️ განახლება ვერ მოხდა. /cancel');
+  return showPassengerProfile(chatId, updated.id);
+}
+
+async function onPassToggle(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const id     = parseInt(query.data.split(':')[1], 10);
+  const result = await togglePassengerActive(id);
+  if (!result) return bot.sendMessage(chatId, '⚠️ ვერ შეიცვალა სტატუსი.');
+  const label  = result.is_active ? '✅ განბლოკილია' : '🔴 დაბლოკილია';
+  await bot.sendMessage(chatId, `${label}: *${result.full_name || '—'}*`, { parse_mode: 'Markdown' });
+  return showPassengerProfile(chatId, id);
 }
 
 // ══ DRIVER MANAGEMENT ════════════════════════════════════════════════════════
