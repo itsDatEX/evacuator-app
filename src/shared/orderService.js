@@ -245,14 +245,15 @@ async function getDriverBalances() {
   return rows;
 }
 
-// Admin: record a cash withdrawal; decrements driver.balance atomically.
-async function recordWithdrawal(driverId, amount, note) {
+// Admin: record a withdrawal; decrements driver.balance atomically.
+// method: 'cash' | 'card'
+async function recordWithdrawal(driverId, amount, method, note = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(
-      'INSERT INTO withdrawals (driver_id, amount, note) VALUES ($1, $2, $3)',
-      [driverId, amount, note || null]
+      'INSERT INTO withdrawals (driver_id, amount, note, method) VALUES ($1, $2, $3, $4)',
+      [driverId, amount, note, method || 'cash']
     );
     await client.query(
       'UPDATE drivers SET balance = balance - $1 WHERE id = $2',
@@ -265,6 +266,17 @@ async function recordWithdrawal(driverId, amount, note) {
   } finally {
     client.release();
   }
+}
+
+async function getDriverWithdrawalHistory(driverId) {
+  const { rows } = await pool.query(`
+    SELECT id, amount, method, note, created_at
+    FROM withdrawals
+    WHERE driver_id = $1
+    ORDER BY created_at DESC
+    LIMIT 30
+  `, [driverId]);
+  return rows;
 }
 
 // Rate the driver after a completed order (called by the passenger).
@@ -651,4 +663,5 @@ module.exports = {
   getPassengerStats,
   getPassengerOrderStats,
   getCompletedOrdersForExport,
+  getDriverWithdrawalHistory,
 };

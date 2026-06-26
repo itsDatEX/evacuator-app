@@ -19,6 +19,7 @@ const {
   getDriverRatings, getDriverRatingHistory,
   getPassengerRatings, getPassengerRatingHistory, getPassengerStats,
   getPassengerOrderStats, getCompletedOrdersForExport,
+  getDriverWithdrawalHistory,
 } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const {
@@ -125,9 +126,7 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_DISC_PASS_ID:    await onDiscPassId(chatId, msg.text);    break;
       case STEPS.AWAIT_DISC_AMOUNT:     await onDiscAmount(chatId, msg.text);    break;
       // Withdrawal flow
-      case STEPS.AWAIT_WD_DRIVER_ID: await onWdDriverId(chatId, msg.text);    break;
-      case STEPS.AWAIT_WD_AMOUNT:    await onWdAmount(chatId, msg.text);      break;
-      case STEPS.AWAIT_WD_NOTE:      await onWdNote(chatId, msg.text);        break;
+      case STEPS.AWAIT_WD_AMOUNT: await onWdAmount(chatId, msg.text); break;
       // Driver management
       case STEPS.AWAIT_DRV_SEARCH:      await onDriverSearch(chatId, msg.text);      break;
       case STEPS.AWAIT_DRV_EDIT_FIELD:  await onDriverEditValue(chatId, msg.text);   break;
@@ -158,6 +157,12 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
     else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
+    // Withdrawal
+    else if (data === 'adm_wd_start')              await onWdStart(query);
+    else if (data.startsWith('adm_wd_drv:'))       await onWdDriverSelected(query);
+    else if (data.startsWith('adm_wd_method:'))    await onWdMethod(query);
+    else if (data === 'adm_wdhist')                await onWdHistStart(query);
+    else if (data.startsWith('adm_wdhist_drv:'))   await onWdHistDriver(query);
     // Broadcast
     else if (data.startsWith('adm_bc:'))           await onBroadcastTarget(query);
     // Export
@@ -964,58 +969,135 @@ async function showBalanceMenu(chatId) {
 
   return bot.sendMessage(chatId, 'მოქმედება:', {
     reply_markup: {
-      inline_keyboard: [[
-        { text: '➖ გატანის ჩაწერა', callback_data: 'adm_wd_start' },
-      ]],
+      inline_keyboard: [
+        [{ text: '➖ გატანის ჩაწერა',  callback_data: 'adm_wd_start' }],
+        [{ text: '📋 გატანის ისტორია', callback_data: 'adm_wdhist'   }],
+      ],
     },
   });
 }
 
-bot.on('callback_query', async (query) => {
-  if (!isAdmin(query.from)) return;
+async function onWdStart(query) {
+  await bot.answerCallbackQuery(query.id);
   const chatId = query.message.chat.id;
-  if (query.data === 'adm_wd_start') {
-    await bot.answerCallbackQuery(query.id);
-    clearWd(chatId);
-    setStep(chatId, STEPS.AWAIT_WD_DRIVER_ID);
-    return bot.sendMessage(chatId, '➖ მძღოლის Telegram ID:',
-      { reply_markup: { remove_keyboard: true } });
-  }
-});
+  clearWd(chatId);
 
-async function onWdDriverId(chatId, text) {
-  const id = parseInt(text?.trim(), 10);
-  if (!id) return bot.sendMessage(chatId, '⚠️ მოქმედი Telegram ID:');
-  updateWd(chatId, { driverTelegramId: id });
+  const drivers = await getDriverBalances();
+  if (!drivers.length) {
+    return bot.sendMessage(chatId, '⚠️ აქტიური მძღოლები ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  }
+
+  const rows = drivers.map(d => {
+    const warn = parseFloat(d.balance) < 0 ? ' ⚠️' : '';
+    return [{ text: `${d.full_name} | ${d.balance} ₾${warn}`, callback_data: `adm_wd_drv:${d.id}` }];
+  });
+
+  return bot.sendMessage(chatId, '➖ *გატანა — მძღოლი:*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function onWdDriverSelected(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId   = query.message.chat.id;
+  const driverId = parseInt(query.data.split(':')[1], 10);
+
+  const drivers = await getDriverBalances();
+  const driver  = drivers.find(d => d.id === driverId);
+  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.');
+
+  updateWd(chatId, { driverId, driverName: driver.full_name, driverBalance: driver.balance });
+
+  return bot.sendMessage(chatId,
+    `👤 *${driver.full_name}*\n💰 ბალანსი: *${driver.balance} ₾*\n\n💳 გადახდის მეთოდი:`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[
+        { text: '💵 ნაღდი',  callback_data: 'adm_wd_method:cash' },
+        { text: '💳 ბარათი', callback_data: 'adm_wd_method:card' },
+      ]] },
+    }
+  );
+}
+
+async function onWdMethod(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const method = query.data.split(':')[1];
+  updateWd(chatId, { method });
   setStep(chatId, STEPS.AWAIT_WD_AMOUNT);
-  return bot.sendMessage(chatId, '💰 გატანის თანხა (₾):');
+  const methodLabel = method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
+  return bot.sendMessage(chatId,
+    `${methodLabel}\n\n💰 გატანის თანხა (₾):`,
+    { reply_markup: { remove_keyboard: true } }
+  );
 }
 
 async function onWdAmount(chatId, text) {
   const amount = parseAmount(text);
   if (!amount) return bot.sendMessage(chatId, '⚠️ დადებითი რიცხვი:');
-  updateWd(chatId, { amount });
-  setStep(chatId, STEPS.AWAIT_WD_NOTE);
-  return bot.sendMessage(chatId, '📝 შენიშვნა (ან "-" გამოსატოვებლად):');
+
+  const { wd } = getSession(chatId);
+  const { driverId, driverName, driverBalance, method } = wd;
+
+  await recordWithdrawal(driverId, amount, method);
+  const newBalance  = parseFloat(driverBalance) - amount;
+  const methodLabel = method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
+  clearWd(chatId);
+
+  return bot.sendMessage(chatId,
+    `✅ *გატანა ჩაიწერა*\n👤 *${driverName}*\n${methodLabel}: ➖ ${amount} ₾\n💰 ახალი ბალანსი: *${newBalance.toFixed(2)} ₾*`,
+    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+  );
 }
 
-async function onWdNote(chatId, text) {
-  const { wd } = getSession(chatId);
-  const note   = (text?.trim() === '-' || !text?.trim()) ? null : text.trim();
+async function onWdHistStart(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
 
   const drivers = await getDriverBalances();
-  const driver  = drivers.find(d => d.telegram_id === wd.driverTelegramId);
-  if (!driver) {
-    clearWd(chatId);
-    return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  if (!drivers.length) return bot.sendMessage(chatId, '⚠️ მძღოლები ვერ მოიძებნა.');
+
+  const rows = drivers.map(d => [
+    { text: d.full_name, callback_data: `adm_wdhist_drv:${d.id}` },
+  ]);
+
+  return bot.sendMessage(chatId, '📋 *გატანის ისტორია — მძღოლი:*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function onWdHistDriver(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId   = query.message.chat.id;
+  const driverId = parseInt(query.data.split(':')[1], 10);
+
+  const [history, driver] = await Promise.all([
+    getDriverWithdrawalHistory(driverId),
+    findDriverById(driverId),
+  ]);
+
+  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.');
+  if (!history.length) {
+    return bot.sendMessage(chatId,
+      `📋 *${driver.full_name}* — გატანა ჯერ არ ყოფილა.`,
+      { parse_mode: 'Markdown' }
+    );
   }
 
-  await recordWithdrawal(driver.id, wd.amount, note);
-  const newBalance = parseFloat(driver.balance) - wd.amount;
-  clearWd(chatId);
+  const lines = history.map((w, i) => {
+    const date        = new Date(w.created_at).toLocaleDateString('ka-GE');
+    const time        = new Date(w.created_at).toLocaleTimeString('ka-GE', { hour: '2-digit', minute: '2-digit' });
+    const methodLabel = w.method === 'card' ? '💳' : '💵';
+    const note        = w.note ? ` | ${w.note}` : '';
+    return `${i + 1}. ${methodLabel} *${w.amount} ₾* | ${date} ${time}${note}`;
+  });
+
   return bot.sendMessage(chatId,
-    `✅ გატანა ჩაიწერა\n👤 *${driver.full_name}*\n➖ ${wd.amount} ₾${note ? `\n📝 ${note}` : ''}\n💰 ახალი ბალანსი: *${newBalance.toFixed(2)} ₾*`,
-    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+    `📋 *${driver.full_name}* — გატანის ისტორია (ბოლო ${history.length}):\n\n${lines.join('\n')}`,
+    { parse_mode: 'Markdown' }
   );
 }
 
