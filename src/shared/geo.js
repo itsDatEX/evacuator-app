@@ -14,4 +14,21 @@ function coordsLabel(lat, lng) {
   return `📍 ${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
 }
 
-module.exports = { haversineKm, coordsLabel };
+const OSRM_TIMEOUT_MS = 5000;
+
+async function getRoadDistanceKm(lat1, lng1, lat2, lng2) {
+  const url =
+    `https://router.project-osrm.org/route/v1/driving/` +
+    `${lng1},${lat1};${lng2},${lat2}?overview=false`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(OSRM_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.code !== 'Ok' || !data.routes?.length) throw new Error('no route');
+    return data.routes[0].distance / 1000;
+  } catch {
+    return haversineKm(lat1, lng1, lat2, lng2);
+  }
+}
+
+module.exports = { haversineKm, coordsLabel, getRoadDistanceKm };

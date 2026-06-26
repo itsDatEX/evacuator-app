@@ -8,7 +8,7 @@ const { findByTelegramId, createPassenger } = require('../shared/passengerServic
 const { createOrder, getPassengerHistory, getEligibleDrivers } = require('../shared/orderService');
 const { consumeDiscount } = require('../shared/passengerService');
 const { calculatePrice } = require('../shared/sheets');
-const { haversineKm, coordsLabel } = require('../shared/geo');
+const { haversineKm, coordsLabel, getRoadDistanceKm } = require('../shared/geo');
 const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
 
@@ -263,7 +263,7 @@ async function onDestLoc(msg) {
   const { order } = getSession(chatId);
 
   const distanceKm = Math.round(
-    haversineKm(order.pickupLat, order.pickupLng, latitude, longitude) * 10
+    (await getRoadDistanceKm(order.pickupLat, order.pickupLng, latitude, longitude)) * 10
   ) / 10;
 
   updateOrder(chatId, {
@@ -382,7 +382,7 @@ async function onGeoConfirm(query) {
   // AWAIT_DEST_CONFIRM
   const { order } = getSession(chatId);
   const distanceKm = Math.round(
-    haversineKm(order.pickupLat, order.pickupLng, lat, lng) * 10
+    (await getRoadDistanceKm(order.pickupLat, order.pickupLng, lat, lng)) * 10
   ) / 10;
   updateOrder(chatId, {
     destLat:     lat,
