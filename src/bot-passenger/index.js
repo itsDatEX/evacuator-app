@@ -9,7 +9,7 @@ const { createOrder, getPassengerHistory, getEligibleDrivers, rateDriver } = req
 const { consumeDiscount } = require('../shared/passengerService');
 const { calculatePrice } = require('../shared/sheets');
 const { haversineKm, coordsLabel, getRoadDistanceKm } = require('../shared/geo');
-const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
+const { reverseGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
 
 const bot        = new TelegramBot(config.telegram.passengerToken, { polling: true });
@@ -28,17 +28,15 @@ function mainMenuKeyboard() {
 }
 
 function locationMethodKeyboard() {
-  const rows = [];
   if (MINIAPP_URL) {
-    rows.push([{ text: '🗺 რუკაზე მონიშვნა', web_app: { url: MINIAPP_URL } }]);
+    return {
+      keyboard: [[{ text: '🗺 რუკაზე მონიშვნა', web_app: { url: MINIAPP_URL } }]],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    };
   }
-  rows.push([{ text: '✏️ მისამართის ჩაწერა' }]);
-  return { keyboard: rows, resize_keyboard: true, one_time_keyboard: true };
+  return { remove_keyboard: true };
 }
-
-const MAP_HINT = MINIAPP_URL
-  ? '🗺 დააჭირეთ ღილაკს რუკაზე მოსანიშნად\nან ✏️ ჩაწერეთ მისამართი:'
-  : '✏️ ჩაწერეთ მისამართი ღილაკით:';
 
 // ── /start ────────────────────────────────────────────────────────────────────
 
@@ -99,31 +97,17 @@ bot.on('message', async (msg) => {
       case STEPS.AWAIT_PICKUP_LOC_METHOD:
         if (msg.web_app_data) await onPickupWebApp(msg);
         else if (msg.location) await onPickupLoc(msg);
-        else if (msg.text === '✏️ მისამართის ჩაწერა') await onPickupMethodText(msg);
-        else bot.sendMessage(chatId, '📍 გამოიყენეთ ქვემოთ მოცემული ღილაკი.');
-        break;
-
-      case STEPS.AWAIT_PICKUP_TEXT:
-        if (msg.text) await onPickupText(msg);
+        else bot.sendMessage(chatId, '🗺 გამოიყენეთ "რუკაზე მონიშვნა" ღილაკი.');
         break;
 
       case STEPS.AWAIT_DEST_LOC_METHOD:
         if (msg.web_app_data) await onDestWebApp(msg);
         else if (msg.location) await onDestLoc(msg);
-        else if (msg.text === '✏️ მისამართის ჩაწერა') await onDestMethodText(msg);
-        else bot.sendMessage(chatId, '📍 გამოიყენეთ ქვემოთ მოცემული ღილაკი.');
-        break;
-
-      case STEPS.AWAIT_DEST_TEXT:
-        if (msg.text) await onDestText(msg);
+        else bot.sendMessage(chatId, '🗺 გამოიყენეთ "რუკაზე მონიშვნა" ღილაკი.');
         break;
 
       case STEPS.AWAIT_PICKUP_DETAILS:
         if (msg.text) await onPickupDetails(msg);
-        break;
-
-      case STEPS.AWAIT_DEST_DETAILS:
-        if (msg.text) await onDestDetails(msg);
         break;
 
       case STEPS.IDLE:
@@ -194,7 +178,7 @@ async function onStartOrder(msg) {
   const chatId = msg.chat.id;
   clearOrder(chatId);
   setStep(chatId, STEPS.AWAIT_PICKUP_LOC_METHOD);
-  return bot.sendMessage(chatId, `📍 საიდან ვიყვანოთ მანქანა?\n\n${MAP_HINT}`, {
+  return bot.sendMessage(chatId, '📍 საიდან ვიყვანოთ მანქანა?\n\n🗺 დააჭირეთ ღილაკს რუკაზე მოსანიშნად:', {
     reply_markup: locationMethodKeyboard(),
   });
 }
@@ -255,48 +239,10 @@ async function onPickupLoc(msg) {
   });
 }
 
-// ── Pickup — text branch ──────────────────────────────────────────────────────
+// ── Cancel inline keyboard helper ────────────────────────────────────────────
 
 function cancelKb() {
   return { inline_keyboard: [[{ text: '❌ გაუქმება', callback_data: 'cancel_input' }]] };
-}
-
-async function onPickupMethodText(msg) {
-  const chatId = msg.chat.id;
-  setStep(chatId, STEPS.AWAIT_PICKUP_TEXT);
-  return bot.sendMessage(
-    chatId,
-    '✏️ ჩაწერეთ საწყისი მისამართი:\n_(მაგ: ჭავჭავაძის 25, თბილისი)_',
-    { parse_mode: 'Markdown', reply_markup: cancelKb() }
-  );
-}
-
-async function onPickupText(msg) {
-  const chatId = msg.chat.id;
-  const query  = msg.text?.trim();
-  if (!query || query.length < 3) {
-    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ სრული მისამართი (მინ. 3 სიმბოლო).');
-  }
-  await bot.sendMessage(chatId, '⏳ ვეძებ მისამართს...');
-  const result = await forwardGeocode(query);
-  if (!result) {
-    return bot.sendMessage(chatId, '❌ მისამართი ვერ მოიძებნა. სცადეთ სხვა ფორმულირება:');
-  }
-  getSession(chatId).pending = result;
-  await bot.sendLocation(chatId, result.lat, result.lng);
-  setStep(chatId, STEPS.AWAIT_PICKUP_CONFIRM);
-  return bot.sendMessage(
-    chatId,
-    `📍 ${result.displayName}\n\nეს სწორი ადგილია?`,
-    {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: '✅ სწორია',          callback_data: 'geo_confirm:ok'    },
-          { text: '🔄 ხელახლა ჩაწერა', callback_data: 'geo_confirm:retry' },
-        ]],
-      },
-    }
-  );
 }
 
 // ── Destination — Mini App (map pin) branch ───────────────────────────────────
@@ -372,47 +318,7 @@ async function onDestLoc(msg) {
   );
 }
 
-// ── Destination — text branch ─────────────────────────────────────────────────
-
-async function onDestMethodText(msg) {
-  const chatId = msg.chat.id;
-  setStep(chatId, STEPS.AWAIT_DEST_TEXT);
-  return bot.sendMessage(
-    chatId,
-    '✏️ ჩაწერეთ დანიშნულების მისამართი:\n_(მაგ: ვარკეთილი 3, თბილისი)_',
-    { parse_mode: 'Markdown', reply_markup: cancelKb() }
-  );
-}
-
-async function onDestText(msg) {
-  const chatId = msg.chat.id;
-  const query  = msg.text?.trim();
-  if (!query || query.length < 3) {
-    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ სრული მისამართი (მინ. 3 სიმბოლო).');
-  }
-  await bot.sendMessage(chatId, '⏳ ვეძებ მისამართს...');
-  const result = await forwardGeocode(query);
-  if (!result) {
-    return bot.sendMessage(chatId, '❌ მისამართი ვერ მოიძებნა. სცადეთ სხვა ფორმულირება:');
-  }
-  getSession(chatId).pending = result;
-  await bot.sendLocation(chatId, result.lat, result.lng);
-  setStep(chatId, STEPS.AWAIT_DEST_CONFIRM);
-  return bot.sendMessage(
-    chatId,
-    `📍 ${result.displayName}\n\nეს სწორი ადგილია?`,
-    {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: '✅ სწორია',          callback_data: 'geo_confirm:ok'    },
-          { text: '🔄 ხელახლა ჩაწერა', callback_data: 'geo_confirm:retry' },
-        ]],
-      },
-    }
-  );
-}
-
-// ── Location details (optional) ──────────────────────────────────────────────
+// ── Location details (optional, pickup only) ──────────────────────────────────
 
 function vsizeKeyboard() {
   return {
@@ -430,48 +336,25 @@ async function onPickupDetails(msg) {
   const { order } = getSession(chatId);
   setStep(chatId, STEPS.AWAIT_DEST_LOC_METHOD);
   return bot.sendMessage(chatId,
-    `✅ საწყისი: *${order.pickupAddress}*\n\n🏁 სად მიგვიყვანოთ?\n\n${MAP_HINT}`,
+    `✅ საწყისი: *${order.pickupAddress}*\n\n🏁 სად მიგვიყვანოთ?\n\n🗺 დააჭირეთ ღილაკს რუკაზე მოსანიშნად:`,
     { parse_mode: 'Markdown', reply_markup: locationMethodKeyboard() }
   );
 }
 
-async function onDestDetails(msg) {
-  const chatId = msg.chat.id;
-  updateOrder(chatId, { destDetails: msg.text.trim() });
-  const { order } = getSession(chatId);
-  setStep(chatId, STEPS.AWAIT_VEHICLE_SIZE);
-  return bot.sendMessage(chatId,
-    `✅ დანიშნულება: *${order.destAddress}*\n📏 ~${order.distanceKm} კმ\n\n🚗 აირჩიეთ მანქანის ტიპი:`,
-    { parse_mode: 'Markdown', reply_markup: vsizeKeyboard() }
-  );
-}
-
 async function onSkipDetails(query) {
-  const chatId  = query.message.chat.id;
-  const { step } = getSession(chatId);
+  const chatId = query.message.chat.id;
+  const { order } = getSession(chatId);
 
   await bot.answerCallbackQuery(query.id);
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
     chat_id: chatId, message_id: query.message.message_id,
   }).catch(() => {});
 
-  if (step === STEPS.AWAIT_PICKUP_DETAILS) {
-    const { order } = getSession(chatId);
-    setStep(chatId, STEPS.AWAIT_DEST_LOC_METHOD);
-    return bot.sendMessage(chatId,
-      `✅ საწყისი: *${order.pickupAddress}*\n\n🏁 სად მიგვიყვანოთ?\n\n${MAP_HINT}`,
-      { parse_mode: 'Markdown', reply_markup: locationMethodKeyboard() }
-    );
-  }
-
-  if (step === STEPS.AWAIT_DEST_DETAILS) {
-    const { order } = getSession(chatId);
-    setStep(chatId, STEPS.AWAIT_VEHICLE_SIZE);
-    return bot.sendMessage(chatId,
-      `✅ დანიშნულება: *${order.destAddress}*\n📏 ~${order.distanceKm} კმ\n\n🚗 აირჩიეთ მანქანის ტიპი:`,
-      { parse_mode: 'Markdown', reply_markup: vsizeKeyboard() }
-    );
-  }
+  setStep(chatId, STEPS.AWAIT_DEST_LOC_METHOD);
+  return bot.sendMessage(chatId,
+    `✅ საწყისი: *${order.pickupAddress}*\n\n🏁 სად მიგვიყვანოთ?\n\n🗺 დააჭირეთ ღილაკს რუკაზე მოსანიშნად:`,
+    { parse_mode: 'Markdown', reply_markup: locationMethodKeyboard() }
+  );
 }
 
 // ── Geo confirmation callback ─────────────────────────────────────────────────
@@ -488,12 +371,12 @@ async function onGeoConfirm(query) {
     if (step === STEPS.AWAIT_PICKUP_CONFIRM) {
       setStep(chatId, STEPS.AWAIT_PICKUP_LOC_METHOD);
       return bot.sendMessage(chatId,
-        `📍 საიდან ვიყვანოთ მანქანა?\n\n${MAP_HINT}`,
+        '📍 საიდან ვიყვანოთ მანქანა?\n\n🗺 დააჭირეთ ღილაკს რუკაზე მოსანიშნად:',
         { reply_markup: locationMethodKeyboard() });
     }
     setStep(chatId, STEPS.AWAIT_DEST_LOC_METHOD);
     return bot.sendMessage(chatId,
-      `🏁 სად მიგვიყვანოთ?\n\n${MAP_HINT}`,
+      '🏁 სად მიგვიყვანოთ?\n\n🗺 დააჭირეთ ღილაკს რუკაზე მოსანიშნად:',
       { reply_markup: locationMethodKeyboard() });
   }
 
@@ -510,7 +393,7 @@ async function onGeoConfirm(query) {
     });
     setStep(chatId, STEPS.AWAIT_PICKUP_DETAILS);
     return bot.sendMessage(chatId,
-      `✅ საწყისი: *${displayName}*\n\n📝 დაამატეთ დეტალი (სართული, შესასვლელი...) ან გამოტოვეთ:`,
+      `✅ საწყისი: *${displayName}*\n\n💬 დაამატეთ შენიშვნა (სართული, შესასვლელი, ნიშანი...) ან გამოტოვეთ:`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -532,15 +415,10 @@ async function onGeoConfirm(query) {
     destCity:    city || null,
     distanceKm,
   });
-  setStep(chatId, STEPS.AWAIT_DEST_DETAILS);
+  setStep(chatId, STEPS.AWAIT_VEHICLE_SIZE);
   return bot.sendMessage(chatId,
-    `✅ დანიშნულება: *${displayName}*\n📏 ~${distanceKm} კმ\n\n📝 დაამატეთ დეტალი (სართული, შესასვლელი...) ან გამოტოვეთ:`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [[{ text: '⏭ გამოტოვება', callback_data: 'skip_details' }]],
-      },
-    }
+    `✅ დანიშნულება: *${displayName}*\n📏 ~${distanceKm} კმ\n\n🚗 აირჩიეთ მანქანის ტიპი:`,
+    { parse_mode: 'Markdown', reply_markup: vsizeKeyboard() }
   );
 }
 
