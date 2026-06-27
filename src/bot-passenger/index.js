@@ -393,7 +393,7 @@ async function onGeoConfirm(query) {
     });
     setStep(chatId, STEPS.AWAIT_PICKUP_DETAILS);
     return bot.sendMessage(chatId,
-      `✅ საწყისი: *${displayName}*\n\n💬 დაამატეთ შენიშვნა (სართული, შესასვლელი, ნიშანი...) ან გამოტოვეთ:`,
+      `✅ საწყისი: *${displayName}*\n\n💬 (სურვილისამებრ) დაამატეთ მინიშნება — მაგ: უახლოესი შენობა, ობიექტი, ან სხვა ამოცნობის ნიშანი:`,
       {
         parse_mode: 'Markdown',
         reply_markup: {

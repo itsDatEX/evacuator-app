@@ -20,6 +20,7 @@ const {
   getPassengerRatings, getPassengerRatingHistory, getPassengerStats,
   getPassengerOrderStats, getCompletedOrdersForExport,
   getAllWithdrawals, getPassengerOrderHistory, getDriverWithdrawalHistory,
+  arriveOrder, startOrder, completeOrder, settleOrder, getOrderById,
 } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const {
@@ -35,6 +36,7 @@ const {
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive,
   getActiveDriverTelegramIds,
+  setAvailability,
 } = require('../shared/driverService');
 const { getBonusEnabled, toggleBonusEnabled } = require('../shared/configService');
 const notifier = require('../shared/notifier');
@@ -175,6 +177,7 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_rat_pass:'))     await onRatingPassDetail(query);
     // Active orders tabs
     else if (data.startsWith('adm_ac:'))           await onActiveTab(query);
+    else if (data.startsWith('adm_ostatus:'))      await onAdminOrderStatus(query);
     // History filters
     else if (data.startsWith('adm_hist:'))         await onHistFilter(query);
     // Passenger management
@@ -827,32 +830,36 @@ async function onActiveTab(query) {
   const orders = await getActiveOrders(tab);
 
   const tabLabel = TAB_LABELS[tab] || tab;
+  const navKb = { inline_keyboard: [[
+    { text: '⏳ Pending',    callback_data: 'adm_ac:pending' },
+    { text: '🚗 Active',     callback_data: 'adm_ac:active'  },
+    { text: '⚠️ ალერტები', callback_data: 'adm_ac:alerts'  },
+  ]] };
 
   if (!orders.length) {
-    return bot.sendMessage(chatId,
-      `${tabLabel}: შეკვეთები არ არის.`,
-      { reply_markup: { inline_keyboard: [[
-        { text: '⏳ Pending',    callback_data: 'adm_ac:pending' },
-        { text: '🚗 Active',     callback_data: 'adm_ac:active'  },
-        { text: '⚠️ ალერტები', callback_data: 'adm_ac:alerts'  },
-      ]] } }
-    );
+    return bot.sendMessage(chatId, `${tabLabel}: შეკვეთები არ არის.`, { reply_markup: navKb });
+  }
+
+  // For active orders, send each with control buttons; others send as list
+  if (tab === 'active') {
+    await bot.sendMessage(chatId, `🚗 *Active (${orders.length}):*`, { parse_mode: 'Markdown' });
+    for (const o of orders) {
+      const line = formatOrderLine(o);
+      const ctrlKb = orderControlKeyboard(o);
+      await bot.sendMessage(chatId, line, { parse_mode: 'Markdown', reply_markup: ctrlKb });
+    }
+    return bot.sendMessage(chatId, '─', { reply_markup: navKb });
   }
 
   const lines  = orders.map(o => formatOrderLine(o));
   const header = `${tabLabel} (${orders.length}):`;
-  const nav    = { reply_markup: { inline_keyboard: [[
-    { text: '⏳ Pending',    callback_data: 'adm_ac:pending' },
-    { text: '🚗 Active',     callback_data: 'adm_ac:active'  },
-    { text: '⚠️ ალერტები', callback_data: 'adm_ac:alerts'  },
-  ]] } };
+  const nav    = { reply_markup: navKb };
 
   const full = `${header}\n\n${lines.join('\n\n')}`;
   if (full.length <= 4000) {
     return bot.sendMessage(chatId, full, { parse_mode: 'Markdown', ...nav });
   }
 
-  // split into chunks if too long
   const chunks = [];
   let cur = header + '\n\n';
   for (const line of lines) {
@@ -865,6 +872,69 @@ async function onActiveTab(query) {
     const opts = { parse_mode: 'Markdown' };
     if (i === chunks.length - 1) Object.assign(opts, nav);
     await bot.sendMessage(chatId, chunks[i], opts);
+  }
+}
+
+function orderControlKeyboard(o) {
+  const id = o.id;
+  if (o.status === 'accepted') {
+    return { inline_keyboard: [[{ text: '📍 მოვედი', callback_data: `adm_ostatus:arrived:${id}` }]] };
+  }
+  if (o.status === 'arrived') {
+    return { inline_keyboard: [[{ text: '🚛 დავიძარი', callback_data: `adm_ostatus:start:${id}` }]] };
+  }
+  if (o.status === 'in_progress') {
+    return { inline_keyboard: [[{ text: '✅ დავასრულე', callback_data: `adm_ostatus:complete:${id}` }]] };
+  }
+  return { inline_keyboard: [] };
+}
+
+async function onAdminOrderStatus(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId  = query.message.chat.id;
+  const parts   = query.data.split(':'); // adm_ostatus:ACTION:ID
+  const action  = parts[1];
+  const orderId = parseInt(parts[2], 10);
+
+  const order = await getOrderById(orderId);
+  if (!order) {
+    return bot.sendMessage(chatId, `⚠️ შეკვეთა #${orderId} ვერ მოიძებნა.`);
+  }
+
+  const driverId = order.driver_id;
+  const driver   = driverId ? await findDriverById(driverId) : null;
+
+  if (action === 'arrived') {
+    const updated = await arriveOrder(orderId, driverId);
+    if (!updated) return bot.sendMessage(chatId, '⚠️ სტატუსი ვერ განახლდა.');
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: chatId, message_id: query.message.message_id,
+    }).catch(() => {});
+    await notifier.notifyPassengerDriverArrived(updated.passenger_telegram_id, driver || { phone: '—' });
+    return bot.sendMessage(chatId, `📍 #${orderId} — სტატუსი: *მოვიდა* (ადმინ)`, { parse_mode: 'Markdown' });
+  }
+
+  if (action === 'start') {
+    const updated = await startOrder(orderId, driverId);
+    if (!updated) return bot.sendMessage(chatId, '⚠️ სტატუსი ვერ განახლდა.');
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: chatId, message_id: query.message.message_id,
+    }).catch(() => {});
+    await notifier.notifyPassengerTripStarted(updated.passenger_telegram_id);
+    return bot.sendMessage(chatId, `🚛 #${orderId} — სტატუსი: *მგზავრობა დაიწყო* (ადმინ)`, { parse_mode: 'Markdown' });
+  }
+
+  if (action === 'complete') {
+    const updated = await completeOrder(orderId, driverId);
+    if (!updated) return bot.sendMessage(chatId, '⚠️ სტატუსი ვერ განახლდა.');
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: chatId, message_id: query.message.message_id,
+    }).catch(() => {});
+    const result = await settleOrder(orderId);
+    if (driver?.telegram_id) await setAvailability(driver.telegram_id, true);
+    await notifier.notifyPassengerTripCompleted(orderId, updated.passenger_telegram_id);
+    const note = result ? `💰 ${updated.price} ₾ | კომ: ${result.commission} ₾` : '';
+    return bot.sendMessage(chatId, `✅ #${orderId} — *დასრულდა* (ადმინ)\n${note}`, { parse_mode: 'Markdown' });
   }
 }
 
