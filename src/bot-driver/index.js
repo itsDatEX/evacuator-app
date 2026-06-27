@@ -179,6 +179,11 @@ bot.on('message', async (msg) => {
       case STEPS.AWAIT_SELF_WD_BANK:    await onSelfWdBank(msg);    break;
       case STEPS.AWAIT_SELF_WD_AMOUNT:  await onSelfWdAmount(msg);  break;
 
+      case STEPS.AWAIT_AVAIL_LOCATION:
+        if (msg.location) await onAvailLocation(msg);
+        else bot.sendMessage(chatId, '📍 გამოიყენეთ ღილაკი ლოკაციის გასაზიარებლად.');
+        break;
+
       default: break; // AWAIT_TRUCK_TYPE, AWAIT_ROUTE_FROM_CONFIRM, AWAIT_ROUTE_TO_CONFIRM, AWAIT_ROUTE_DEPARTURE: callback-only
     }
   } catch (err) {
@@ -186,6 +191,29 @@ bot.on('message', async (msg) => {
     bot.sendMessage(chatId, '❌ სერვერის შეცდომა. სცადეთ /start ხელახლა.');
   }
 });
+
+// ── Availability with GPS ─────────────────────────────────────────────────────
+
+async function onAvailLocation(msg) {
+  const chatId = msg.chat.id;
+  // location already saved by the silent capture at the top of the handler
+  const driver = await findByTelegramId(msg.from.id);
+  if (!driver) return;
+
+  await setAvailability(driver.telegram_id, true);
+  setStep(chatId, STEPS.IDLE);
+
+  const pending = await getPendingOrdersMatchingDriver(driver);
+  if (pending.length > 0) {
+    await bot.sendMessage(chatId,
+      `✅ ლოკაცია მიღებული! ხელმისაწვდომი ხართ. *${pending.length}* მოლოდინში შეკვეთა გამოგეგზავნათ:`,
+      { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() });
+    return notifier.notifyDriverOfPendingOrders(driver, pending);
+  }
+  return bot.sendMessage(chatId,
+    '✅ ლოკაცია მიღებული! ახლა ხელმისაწვდომი ხართ.',
+    { reply_markup: mainMenuKeyboard() });
+}
 
 // ── Registration ───────────────────────────────────────────────────────────────
 
@@ -280,18 +308,32 @@ async function onMenuAction(msg) {
 
   switch (text) {
     case '✅ ხელმისაწვდომი ვარ': {
-      await setAvailability(driver.telegram_id, true);
-      const pending = await getPendingOrdersMatchingDriver(driver);
-      if (pending.length > 0) {
-        await bot.sendMessage(chatId,
-          `✅ ხელმისაწვდომი ხართ. *${pending.length}* მოლოდინში შეკვეთა გამოგეგზავნათ:`,
-          { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() });
-        await notifier.notifyDriverOfPendingOrders(driver, pending);
-      } else {
-        await bot.sendMessage(chatId, '✅ სტატუსი განახლდა — ხელმისაწვდომი ხართ. ახალი შეკვეთები მოვა.',
-          { reply_markup: mainMenuKeyboard() });
+      if (!driver.current_lat) {
+        setStep(chatId, STEPS.AWAIT_AVAIL_LOCATION);
+        return bot.sendMessage(chatId,
+          '📍 გთხოვ, ჩართე ლოკაცია, რომ ხელმისაწვდომი გახდე:',
+          {
+            reply_markup: {
+              keyboard: [[{ text: '📍 ლოკაციის გაზიარება', request_location: true }]],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          }
+        );
       }
-      return;
+      await setAvailability(driver.telegram_id, true);
+      if (driver.current_lat) {
+        const pending = await getPendingOrdersMatchingDriver(driver);
+        if (pending.length > 0) {
+          await bot.sendMessage(chatId,
+            `✅ ხელმისაწვდომი ხართ. *${pending.length}* მოლოდინში შეკვეთა გამოგეგზავნათ:`,
+            { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() });
+          await notifier.notifyDriverOfPendingOrders(driver, pending);
+          return;
+        }
+      }
+      return bot.sendMessage(chatId, '✅ სტატუსი განახლდა — ხელმისაწვდომი ხართ. ახალი შეკვეთები მოვა.',
+        { reply_markup: mainMenuKeyboard() });
     }
 
     case '❌ მიუწვდომელი ვარ':
@@ -632,6 +674,12 @@ async function onAccept(query) {
   if (!driver) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
   }
+  if (!driver.is_available) {
+    return bot.answerCallbackQuery(query.id, {
+      text: '❌ შენ ჯერ კიდევ აქტიურ შეკვეთაზე ხარ.',
+      show_alert: true,
+    });
+  }
 
   const order = await acceptOrder(orderId, driver.id);
   if (!order) {
@@ -696,19 +744,23 @@ async function onArrived(query) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
   }
 
-  if (driver.current_lat != null) {
-    const orderForCheck = await getOrderById(orderId);
-    if (orderForCheck?.pickup_lat != null) {
-      const dist = haversineKm(
-        parseFloat(driver.current_lat), parseFloat(driver.current_lng),
-        parseFloat(orderForCheck.pickup_lat), parseFloat(orderForCheck.pickup_lng),
-      );
-      if (dist > ARRIVED_THRESHOLD_KM) {
-        return bot.answerCallbackQuery(query.id, {
-          text: `📍 ჯერ ძალიან შორს ხარ (~${dist.toFixed(1)} კმ) — მოახლოვდი ადგილს, შემდეგ ხელახლა ცადო.`,
-          show_alert: true,
-        });
-      }
+  if (driver.current_lat == null) {
+    return bot.answerCallbackQuery(query.id, {
+      text: '📍 GPS ლოკაცია გათეშილია — ჩართე location share, რომ შეგეძლოს გამოძახების მიღება/დასრულება.',
+      show_alert: true,
+    });
+  }
+  const orderForArrived = await getOrderById(orderId);
+  if (orderForArrived?.pickup_lat != null) {
+    const dist = haversineKm(
+      parseFloat(driver.current_lat), parseFloat(driver.current_lng),
+      parseFloat(orderForArrived.pickup_lat), parseFloat(orderForArrived.pickup_lng),
+    );
+    if (dist > ARRIVED_THRESHOLD_KM) {
+      return bot.answerCallbackQuery(query.id, {
+        text: `📍 ჯერ ძალიან შორს ხარ (~${dist.toFixed(1)} კმ) — მოახლოვდი ადგილს, შემდეგ ხელახლა ცადო.`,
+        show_alert: true,
+      });
     }
   }
 
@@ -791,19 +843,23 @@ async function onComplete(query) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
   }
 
-  if (driver.current_lat != null) {
-    const orderForCheck = await getOrderById(orderId);
-    if (orderForCheck?.dest_lat != null) {
-      const dist = haversineKm(
-        parseFloat(driver.current_lat), parseFloat(driver.current_lng),
-        parseFloat(orderForCheck.dest_lat), parseFloat(orderForCheck.dest_lng),
-      );
-      if (dist > COMPLETE_THRESHOLD_KM) {
-        return bot.answerCallbackQuery(query.id, {
-          text: `📍 ჯერ ძალიან შორს ხარ დანიშნულების ადგილიდან (~${dist.toFixed(1)} კმ) — მოახლოვდი, შემდეგ ხელახლა ცადო.`,
-          show_alert: true,
-        });
-      }
+  if (driver.current_lat == null) {
+    return bot.answerCallbackQuery(query.id, {
+      text: '📍 GPS ლოკაცია გათეშილია — ჩართე location share, რომ შეგეძლოს გამოძახების მიღება/დასრულება.',
+      show_alert: true,
+    });
+  }
+  const orderForComplete = await getOrderById(orderId);
+  if (orderForComplete?.dest_lat != null) {
+    const dist = haversineKm(
+      parseFloat(driver.current_lat), parseFloat(driver.current_lng),
+      parseFloat(orderForComplete.dest_lat), parseFloat(orderForComplete.dest_lng),
+    );
+    if (dist > COMPLETE_THRESHOLD_KM) {
+      return bot.answerCallbackQuery(query.id, {
+        text: `📍 ჯერ ძალიან შორს ხარ დანიშნულების ადგილიდან (~${dist.toFixed(1)} კმ) — მოახლოვდი, შემდეგ ხელახლა ცადო.`,
+        show_alert: true,
+      });
     }
   }
 

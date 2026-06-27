@@ -184,6 +184,7 @@ async function getEligibleDrivers(
     `SELECT * FROM drivers
      WHERE is_active    = true
        AND is_available = true
+       AND current_lat IS NOT NULL
        AND ($1::boolean OR truck_type = 'crane')
        AND NOT ($2::text = 'cash' AND balance < 0)
        AND (

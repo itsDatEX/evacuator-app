@@ -19,6 +19,8 @@ const STEPS = {
   // Self-service withdrawal
   AWAIT_SELF_WD_BANK:       'AWAIT_SELF_WD_BANK',
   AWAIT_SELF_WD_AMOUNT:     'AWAIT_SELF_WD_AMOUNT',
+  // GPS required before going available
+  AWAIT_AVAIL_LOCATION:     'AWAIT_AVAIL_LOCATION',
 };
 
 const sessions = new Map();
