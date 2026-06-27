@@ -29,6 +29,7 @@ function mainMenuKeyboard() {
 function locationMethodKeyboard() {
   return {
     keyboard: [
+      [{ text: '🗺 ლოკაციის არჩევა', request_location: true }],
       [{ text: '✏️ მისამართის ჩაწერა' }],
     ],
     resize_keyboard: true,
@@ -36,7 +37,7 @@ function locationMethodKeyboard() {
   };
 }
 
-const MAP_HINT = '🗺 დააჭირეთ 📎 → Location → Choose on Map\nან ✏️ ჩაწერეთ მისამართი ღილაკით:';
+const MAP_HINT = '🗺 დააჭირეთ ღილაკს და აირჩიეთ "Choose on Map"\nან ✏️ ჩაწერეთ მისამართი ღილაკით:';
 
 // ── /start ────────────────────────────────────────────────────────────────────
 
