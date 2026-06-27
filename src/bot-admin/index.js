@@ -507,7 +507,17 @@ async function onBroadcastText(chatId, text) {
   const target = broadcast.target;
   clearBroadcast(chatId);
 
-  const ids = target === 'drivers'
+  const isDrivers  = target === 'drivers';
+  const targetBot  = isDrivers ? notifier.getDriverBot() : notifier.getPassengerBot();
+
+  if (!targetBot) {
+    return bot.sendMessage(chatId,
+      `❌ ${isDrivers ? 'Driver' : 'Passenger'} bot ჯერ არ არის ინიციალიზებული. სცადეთ მოგვიანებით.`,
+      { reply_markup: mainMenu() }
+    );
+  }
+
+  const ids = isDrivers
     ? await getActiveDriverTelegramIds()
     : await getActivePassengerTelegramIds();
 
@@ -520,12 +530,12 @@ async function onBroadcastText(chatId, text) {
   let sent = 0, failed = 0;
   for (const telegramId of ids) {
     try {
-      await bot.sendMessage(telegramId, text, { parse_mode: 'Markdown' });
+      await targetBot.sendMessage(telegramId, text, { parse_mode: 'Markdown' });
       sent++;
     } catch {
       failed++;
     }
-    await new Promise(r => setTimeout(r, 50)); // ~20 msg/sec, Telegram rate limit safe
+    await new Promise(r => setTimeout(r, 50));
   }
 
   return bot.sendMessage(chatId,

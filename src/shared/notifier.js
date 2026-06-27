@@ -167,9 +167,14 @@ async function notifyPassengerTripCompleted(orderId, passengerTelegramId) {
   }
 }
 
+function getDriverBot()    { return _driverBot; }
+function getPassengerBot() { return _passengerBot; }
+
 module.exports = {
   setDriverBot,
   setPassengerBot,
+  getDriverBot,
+  getPassengerBot,
   notifyDriversOfNewOrder,
   notifyPassengerOrderAccepted,
   notifyPassengerDriverArrived,
