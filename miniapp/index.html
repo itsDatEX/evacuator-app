@@ -9,12 +9,49 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
     body { display: flex; flex-direction: column; background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #000); }
+
+    #search-bar {
+      display: flex; gap: 6px; padding: 8px 10px;
+      background: var(--tg-theme-bg-color, #fff);
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+      flex-shrink: 0;
+    }
+    #search-input {
+      flex: 1; padding: 8px 10px;
+      border: 1px solid rgba(0,0,0,0.15); border-radius: 8px;
+      font-size: 14px;
+      background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+      color: var(--tg-theme-text-color, #000);
+      outline: none;
+    }
+    #search-input::placeholder { color: var(--tg-theme-hint-color, #aaa); }
+    #search-btn {
+      padding: 8px 13px; border: none; border-radius: 8px;
+      background: var(--tg-theme-button-color, #2481cc);
+      color: var(--tg-theme-button-text-color, #fff);
+      font-size: 16px; cursor: pointer; flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    #search-btn:disabled { opacity: 0.5; cursor: default; }
+
     #map { flex: 1; min-height: 0; }
-    #footer { padding: 10px 14px 14px; border-top: 1px solid rgba(0,0,0,0.08); }
-    #address-text { font-size: 13px; color: var(--tg-theme-hint-color, #888); margin-bottom: 6px; min-height: 18px; }
-    #hint { font-size: 12px; color: var(--tg-theme-hint-color, #aaa); text-align: center; margin-bottom: 10px; }
+
+    #footer { padding: 10px 14px 14px; border-top: 1px solid rgba(0,0,0,0.08); flex-shrink: 0; }
+    #address-text { font-size: 13px; color: var(--tg-theme-hint-color, #888); margin-bottom: 10px; min-height: 18px; }
+
+    #btn-row { display: flex; gap: 8px; }
+    #myloc-btn {
+      flex: 0 0 auto; padding: 13px 14px;
+      border: none; border-radius: 10px;
+      background: var(--tg-theme-secondary-bg-color, #ebebeb);
+      color: var(--tg-theme-text-color, #333);
+      font-size: 15px; cursor: pointer;
+      transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+    #myloc-btn:disabled { opacity: 0.5; cursor: default; }
     #confirm-btn {
-      width: 100%; padding: 13px;
+      flex: 1; padding: 13px;
       background: var(--tg-theme-button-color, #2481cc);
       color: var(--tg-theme-button-text-color, #fff);
       border: none; border-radius: 10px;
@@ -22,15 +59,25 @@
       transition: opacity 0.15s;
     }
     #confirm-btn:disabled { opacity: 0.35; cursor: default; }
-    #confirm-btn:not(:disabled):active { opacity: 0.7; }
+    #confirm-btn:not(:disabled):active,
+    #myloc-btn:not(:disabled):active,
+    #search-btn:not(:disabled):active { opacity: 0.65; }
   </style>
 </head>
 <body>
+  <div id="search-bar">
+    <input id="search-input" type="text" placeholder="მისამართი, ადგილი..."/>
+    <button id="search-btn">🔍</button>
+  </div>
+
   <div id="map"></div>
+
   <div id="footer">
     <div id="address-text">📍 რუკაზე დააჭირეთ ადგილს...</div>
-    <div id="hint">pin-ი გადაიტანეთ ზუსტი მდებარეობისთვის</div>
-    <button id="confirm-btn" disabled>✅ ეს ადგილი</button>
+    <div id="btn-row">
+      <button id="myloc-btn">📍 ჩემი ადგილი</button>
+      <button id="confirm-btn" disabled>✅ ეს ადგილი</button>
+    </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -45,9 +92,12 @@
       attribution: '© OpenStreetMap', maxZoom: 19,
     }).addTo(map);
 
-    const addressEl = document.getElementById('address-text');
-    const hintEl    = document.getElementById('hint');
-    const btn       = document.getElementById('confirm-btn');
+    const searchInput = document.getElementById('search-input');
+    const searchBtn   = document.getElementById('search-btn');
+    const addressEl   = document.getElementById('address-text');
+    const mylocBtn    = document.getElementById('myloc-btn');
+    const confirmBtn  = document.getElementById('confirm-btn');
+
     let marker = null, selLat = null, selLng = null;
 
     function place(lat, lng) {
@@ -67,18 +117,80 @@
         marker.setLatLng([lat, lng]);
       }
       addressEl.textContent = `📍 ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-      hintEl.textContent    = 'pin-ი გადაიტანეთ ზუსტი მდებარეობისთვის';
-      btn.disabled = false;
+      confirmBtn.disabled = false;
     }
 
     map.on('click', e => place(e.latlng.lat, e.latlng.lng));
 
-    btn.addEventListener('click', () => {
+    // ── Search ────────────────────────────────────────────────────────────────
+
+    async function doSearch() {
+      const q = searchInput.value.trim();
+      if (!q) return;
+      searchBtn.textContent = '⏳';
+      searchBtn.disabled    = true;
+      try {
+        const res  = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`,
+          { headers: { 'Accept-Language': 'ka,en' } }
+        );
+        const data = await res.json();
+        if (data.length) {
+          const lat = parseFloat(data[0].lat);
+          const lng = parseFloat(data[0].lon);
+          map.setView([lat, lng], 16);
+          place(lat, lng);
+        } else {
+          addressEl.textContent = '❌ ადგილი ვერ მოიძებნა';
+        }
+      } catch {
+        addressEl.textContent = '❌ ძებნის შეცდომა — სცადეთ ხელახლა';
+      } finally {
+        searchBtn.textContent = '🔍';
+        searchBtn.disabled    = false;
+      }
+    }
+
+    searchBtn.addEventListener('click', doSearch);
+    searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+    // ── My Location ───────────────────────────────────────────────────────────
+
+    function goToMyLocation() {
+      if (!navigator.geolocation) {
+        addressEl.textContent = '❌ Geolocation მხარდაჭერილი არ არის';
+        return;
+      }
+      mylocBtn.disabled     = true;
+      mylocBtn.textContent  = '⏳';
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          map.setView([lat, lng], 16);
+          place(lat, lng);
+          mylocBtn.disabled    = false;
+          mylocBtn.textContent = '📍 ჩემი ადგილი';
+        },
+        () => {
+          addressEl.textContent = '❌ ადგილმდებარეობა მიუწვდომელია';
+          mylocBtn.disabled     = false;
+          mylocBtn.textContent  = '📍 ჩემი ადგილი';
+        },
+        { timeout: 8000 }
+      );
+    }
+
+    mylocBtn.addEventListener('click', goToMyLocation);
+
+    // ── Confirm ───────────────────────────────────────────────────────────────
+
+    confirmBtn.addEventListener('click', () => {
       if (selLat === null) return;
       tg.sendData(JSON.stringify({ lat: selLat, lng: selLng }));
     });
 
-    // Center map on user's current position (just centering, not auto-selecting)
+    // Center on user's position on load (just centering, not selecting)
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         pos => map.setView([pos.coords.latitude, pos.coords.longitude], 15),
