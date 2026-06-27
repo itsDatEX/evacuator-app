@@ -292,7 +292,7 @@ async function onCanRoll(query) {
   const sizeLabel = o.vehicleSize === 'jeep' ? '🚐 ჯიპი' : o.vehicleSize === 'large' ? '🚌 დიდი ავტ.' : '🚙 ჩვეულებრივი';
   const rollLabel = canRoll ? '✅ გორავს' : '❌ არ გორავს';
   const extras    = [
-    bd.size_fee  > 0 && `  მსხვილი: +${bd.size_fee} ₾`,
+    bd.size_fee  > 0 && `  დიდი მანქანა: +${bd.size_fee} ₾`,
     bd.crane_fee > 0 && `  ამწე: +${bd.crane_fee} ₾`,
   ].filter(Boolean).join('\n') || '  —';
 

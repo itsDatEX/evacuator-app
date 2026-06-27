@@ -713,7 +713,7 @@ async function onAccept(query) {
   }).catch(() => {});
 
   const payLabel  = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
-  const sizeLabel = order.vehicle_size === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+  const sizeLabel = order.vehicle_size === 'jeep' ? '🚐 ჯიპი' : order.vehicle_size === 'large' ? '🚌 დიდი მანქანა' : '🚗 ჩვეულებრივი';
 
   return bot.sendMessage(
     chatId,

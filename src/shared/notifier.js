@@ -32,7 +32,7 @@ async function notifyDriversOfNewOrder(order, drivers, draft) {
     return;
   }
 
-  const sizeLabel     = draft.vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+  const sizeLabel     = draft.vehicleSize === 'jeep' ? '🚐 ჯიპი' : draft.vehicleSize === 'large' ? '🚌 დიდი მანქანა' : '🚗 ჩვეულებრივი';
   const rollLabel     = draft.canRoll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
   const sourceTag     = order.source === 'phone' ? '📞 ტელეფონით' : '📱 ბოტიდან';
   const phoneInfo     = order.source === 'phone' && order.caller_phone
@@ -179,7 +179,7 @@ async function notifyDriverOfPendingOrders(driver, orders) {
     try {
       const sizeLabel     = order.vehicle_size === 'jeep'
         ? '🚐 ჯიპი'
-        : order.vehicle_size === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+        : order.vehicle_size === 'large' ? '🚌 დიდი მანქანა' : '🚗 ჩვეულებრივი';
       const rollLabel     = order.can_roll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
       const sourceTag     = order.source === 'phone' ? '📞 ტელეფონით' : '📱 ბოტიდან';
       const phoneInfo     = order.source === 'phone' && order.caller_phone

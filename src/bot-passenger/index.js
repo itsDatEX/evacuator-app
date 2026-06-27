@@ -640,7 +640,7 @@ async function onCanRoll(query) {
   const rollLabel = canRoll ? '✅ გორავს' : '❌ არ გორავს';
 
   const extraLines = [];
-  if (bd.size_fee  > 0) extraLines.push(`  მსხვილი მანქანა: +${bd.size_fee} ₾`);
+  if (bd.size_fee  > 0) extraLines.push(`  დიდი მანქანა: +${bd.size_fee} ₾`);
   if (bd.crane_fee > 0) extraLines.push(`  ამწე (არ გორავს): +${bd.crane_fee} ₾`);
   if (bd.discount  < 0) extraLines.push(`  🎟️ ფასდაკლება: ${bd.discount} ₾`);
   const extrasText = extraLines.length ? extraLines.join('\n') : '  —';
