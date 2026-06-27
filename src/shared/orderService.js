@@ -126,6 +126,44 @@ async function getOrderById(orderId) {
   return rows[0] || null;
 }
 
+// Returns pending orders that this specific driver is eligible to see.
+// Mirrors getEligibleDrivers logic but from the order side.
+async function getPendingOrdersMatchingDriver(driver) {
+  const { rows } = await pool.query(
+    `SELECT o.*, p.full_name AS passenger_name, p.phone AS passenger_phone
+     FROM orders o
+     LEFT JOIN passengers p ON o.passenger_id = p.id
+     WHERE o.status = 'pending'
+       AND ($1 = 'crane' OR o.can_roll = true)
+       AND NOT ($2::numeric < 0 AND o.payment_method = 'cash')
+       AND (
+         $3::text IS NULL
+         OR $4::timestamptz IS NULL
+         OR $4 <= NOW() - INTERVAL '2 hours'
+         OR (
+           $4 > NOW() - INTERVAL '2 hours'
+           AND (
+             COALESCE(o.pickup_city,          '') ILIKE '%' || $3 || '%'
+             OR COALESCE(o.pickup_city,       '') ILIKE '%' || $5 || '%'
+             OR COALESCE(o.pickup_address,    '') ILIKE '%' || $3 || '%'
+             OR COALESCE(o.pickup_address,    '') ILIKE '%' || $5 || '%'
+             OR COALESCE(o.destination_address,'') ILIKE '%' || $3 || '%'
+             OR COALESCE(o.destination_address,'') ILIKE '%' || $5 || '%'
+           )
+         )
+       )
+     ORDER BY o.created_at ASC`,
+    [
+      driver.truck_type,
+      parseFloat(driver.balance) || 0,
+      driver.route_from        || null,
+      driver.route_departure_at || null,
+      driver.route_to          || null,
+    ]
+  );
+  return rows;
+}
+
 // canRoll:         true → regular+crane; false → crane only
 // paymentMethod:   'cash' → exclude drivers with negative balance
 // pickupCity/destCity: Nominatim city names (null for phone orders or geocode failure)
@@ -733,6 +771,7 @@ module.exports = {
   cancelOrder,
   getPendingOrders,
   getOrderById,
+  getPendingOrdersMatchingDriver,
   rateDriver,
   ratePassenger,
   getPassengerHistory,

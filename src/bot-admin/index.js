@@ -192,6 +192,7 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_drv_edit:'))     await onDrvEditStart(query);
     else if (data.startsWith('adm_drv_toggle:'))   await onDrvToggle(query);
     else if (data === 'adm_drv_back')              { await bot.answerCallbackQuery(query.id); await showDriverMenu(chatId); }
+    else if (data === 'cancel_input')              await onCancelInput(query);
     else if (data === 'noop')                      await bot.answerCallbackQuery(query.id);
     else await bot.answerCallbackQuery(query.id);
   } catch (err) {
@@ -202,12 +203,16 @@ bot.on('callback_query', async (query) => {
 
 // ══ ORDER FLOW ════════════════════════════════════════════════════════════════
 
+function cancelKb() {
+  return { inline_keyboard: [[{ text: '❌ გაუქმება', callback_data: 'cancel_input' }]] };
+}
+
 async function startOrder(chatId) {
   clearOrder(chatId);
   setStep(chatId, STEPS.AWAIT_PHONE);
   return bot.sendMessage(chatId,
     '📞 *ახალი ტელეფონური შეკვეთა*\n\n1/7 — მგზავრის ტელეფონი:',
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
   );
 }
 
@@ -216,21 +221,21 @@ async function onPhone(chatId, text) {
     return bot.sendMessage(chatId, '⚠️ მინიმუმ 6 ციფრი. სცადეთ ხელახლა:');
   updateOrder(chatId, { callerPhone: text.trim() });
   setStep(chatId, STEPS.AWAIT_PICKUP);
-  return bot.sendMessage(chatId, '2/7 — *საიდან* (მისამართი):', { parse_mode: 'Markdown' });
+  return bot.sendMessage(chatId, '2/7 — *საიდან* (მისამართი):', { parse_mode: 'Markdown', reply_markup: cancelKb() });
 }
 
 async function onPickup(chatId, text) {
   if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ვერ ამოიკითხა. სცადეთ:');
   updateOrder(chatId, { pickupAddress: text.trim() });
   setStep(chatId, STEPS.AWAIT_DEST);
-  return bot.sendMessage(chatId, '3/7 — *სად* (მისამართი):', { parse_mode: 'Markdown' });
+  return bot.sendMessage(chatId, '3/7 — *სად* (მისამართი):', { parse_mode: 'Markdown', reply_markup: cancelKb() });
 }
 
 async function onDest(chatId, text) {
   if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ვერ ამოიკითხა. სცადეთ:');
   updateOrder(chatId, { destAddress: text.trim() });
   setStep(chatId, STEPS.AWAIT_DISTANCE);
-  return bot.sendMessage(chatId, '4/7 — *მანძილი კმ-ებში*:', { parse_mode: 'Markdown' });
+  return bot.sendMessage(chatId, '4/7 — *მანძილი კმ-ებში*:', { parse_mode: 'Markdown', reply_markup: cancelKb() });
 }
 
 async function onDistance(chatId, text) {
@@ -241,8 +246,9 @@ async function onDistance(chatId, text) {
   return bot.sendMessage(chatId, '5/7 — *მანქანის ტიპი:*', {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: [[
-      { text: '🚗 ჩვეულებრივი', callback_data: 'adm_vsize:normal' },
-      { text: '🚌 დიდი',         callback_data: 'adm_vsize:large'  },
+      { text: '🚙 ჩვეულებრივი', callback_data: 'adm_vsize:normal' },
+      { text: '🚐 ჯიპი',        callback_data: 'adm_vsize:jeep'   },
+      { text: '🚌 დიდი ავტ.',   callback_data: 'adm_vsize:large'  },
     ]] },
   });
 }
@@ -253,7 +259,7 @@ async function onVsize(query) {
   updateOrder(chatId, { vehicleSize });
   setStep(chatId, STEPS.AWAIT_CANROLL);
   await bot.answerCallbackQuery(query.id);
-  const label = vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+  const label = vehicleSize === 'jeep' ? '🚐 ჯიპი' : vehicleSize === 'large' ? '🚌 დიდი ავტ.' : '🚙 ჩვეულებრივი';
   return bot.sendMessage(chatId, `✅ ${label}\n\n6/7 — *გორავს მანქანა?*`, {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: [[
@@ -283,7 +289,7 @@ async function onCanRoll(query) {
 
   const bd        = priceResult.breakdown;
   const { order: o } = getSession(chatId);
-  const sizeLabel = o.vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+  const sizeLabel = o.vehicleSize === 'jeep' ? '🚐 ჯიპი' : o.vehicleSize === 'large' ? '🚌 დიდი ავტ.' : '🚙 ჩვეულებრივი';
   const rollLabel = canRoll ? '✅ გორავს' : '❌ არ გორავს';
   const extras    = [
     bd.size_fee  > 0 && `  მსხვილი: +${bd.size_fee} ₾`,
@@ -496,8 +502,8 @@ async function onBroadcastTarget(query) {
   setStep(chatId, STEPS.AWAIT_BROADCAST_TEXT);
   const label = target === 'drivers' ? '👤 მძღოლებისთვის' : '🧍 მგზავრებისთვის';
   return bot.sendMessage(chatId,
-    `${label}\n\n✏️ ჩაწერეთ შეტყობინების ტექსტი (Markdown მხარდაჭერილია) ან /cancel:`,
-    { reply_markup: { remove_keyboard: true } }
+    `${label}\n\n✏️ ჩაწერეთ შეტყობინების ტექსტი (Markdown მხარდაჭერილია):`,
+    { reply_markup: cancelKb() }
   );
 }
 
@@ -787,7 +793,7 @@ function formatOrderLine(o) {
     const mins  = parseInt(o.minutes_waiting) || 0;
     const alert = mins >= 10 ? '⚠️ ' : '';
     const who   = o.source === 'phone' ? (o.caller_phone || '?') : (o.passenger_name || '?');
-    const vtype = o.vehicle_size === 'large' ? '🏗' : '🚗';
+    const vtype = o.vehicle_size === 'jeep' ? '🚐' : o.vehicle_size === 'large' ? '🚌' : '🚗';
     const roll  = o.can_roll ? '' : ' ❌გორ';
     return `${alert}*#${o.id}* | ${mins} წთ | ${src} ${who}\n   📍 ${from} → ${to} | ${o.price} ₾ ${vtype}${roll}`;
   }
@@ -923,7 +929,7 @@ async function onBonusDriverId(chatId, text) {
   if (!id) return bot.sendMessage(chatId, '⚠️ მოქმედი Telegram ID (რიცხვი):');
   updateBonus(chatId, { driverTelegramId: id });
   setStep(chatId, STEPS.AWAIT_BONUS_AMOUNT);
-  return bot.sendMessage(chatId, '💰 ბონუსის თანხა (₾):');
+  return bot.sendMessage(chatId, '💰 ბონუსის თანხა (₾):', { reply_markup: cancelKb() });
 }
 
 async function onBonusAmount(chatId, text) {
@@ -944,7 +950,7 @@ async function onDiscPassId(chatId, text) {
   if (!id) return bot.sendMessage(chatId, '⚠️ მოქმედი Telegram ID:');
   updateBonus(chatId, { passTelegramId: id });
   setStep(chatId, STEPS.AWAIT_DISC_AMOUNT);
-  return bot.sendMessage(chatId, '💰 ფასდაკლების თანხა (₾):');
+  return bot.sendMessage(chatId, '💰 ფასდაკლების თანხა (₾):', { reply_markup: cancelKb() });
 }
 
 async function onDiscAmount(chatId, text) {
@@ -1100,20 +1106,20 @@ async function onWdMethod(query) {
       setStep(chatId, STEPS.AWAIT_WD_AMOUNT);
       return bot.sendMessage(chatId,
         `💳 გადარიცხვა: *${wd.driverBankAccount}* ანგარიშზე\n\n💰 გატანის თანხა (₾):`,
-        { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+        { parse_mode: 'Markdown', reply_markup: cancelKb() }
       );
     }
     setStep(chatId, STEPS.AWAIT_WD_BANK_ACCOUNT);
     return bot.sendMessage(chatId,
       '🏦 მძღოლს IBAN არ აქვს. შეიყვანეთ ბანკის ანგარიშის ნომერი:',
-      { reply_markup: { remove_keyboard: true } }
+      { reply_markup: cancelKb() }
     );
   }
 
   setStep(chatId, STEPS.AWAIT_WD_AMOUNT);
   return bot.sendMessage(chatId,
     '💵 ქეშად\n\n💰 გატანის თანხა (₾):',
-    { reply_markup: { remove_keyboard: true } }
+    { reply_markup: cancelKb() }
   );
 }
 
@@ -1128,7 +1134,7 @@ async function onWdBankAccount(chatId, text) {
 
   return bot.sendMessage(chatId,
     `💳 გადარიცხვა: *${iban}* ანგარიშზე\n\n💰 გატანის თანხა (₾):`,
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
   );
 }
 
@@ -1313,8 +1319,7 @@ async function onPassSearchStart(query) {
   const chatId = query.message.chat.id;
   clearPassMgmt(chatId);
   setStep(chatId, STEPS.AWAIT_PASS_SEARCH);
-  return bot.sendMessage(chatId, '🔍 სახელი ან ტელეფონის ნაწილი (ან /cancel):',
-    { reply_markup: { remove_keyboard: true } });
+  return bot.sendMessage(chatId, '🔍 სახელი ან ტელეფონის ნაწილი:', { reply_markup: cancelKb() });
 }
 
 async function onPassengerSearch(chatId, text) {
@@ -1351,8 +1356,8 @@ async function onPassEditStart(query) {
   updatePassMgmt(chatId, { passengerId: id, editField: field });
   setStep(chatId, STEPS.AWAIT_PASS_EDIT_FIELD);
   return bot.sendMessage(chatId,
-    `✏️ ახალი მნიშვნელობა — *${PASS_FIELD_LABELS[field] || field}* (ან /cancel):`,
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    `✏️ ახალი მნიშვნელობა — *${PASS_FIELD_LABELS[field] || field}*:`,
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
   );
 }
 
@@ -1481,8 +1486,7 @@ async function onDrvSearchStart(query) {
   const chatId = query.message.chat.id;
   clearDrvMgmt(chatId);
   setStep(chatId, STEPS.AWAIT_DRV_SEARCH);
-  return bot.sendMessage(chatId, '🔍 სახელი ან ტელეფონის ნაწილი (ან /cancel):',
-    { reply_markup: { remove_keyboard: true } });
+  return bot.sendMessage(chatId, '🔍 სახელი ან ტელეფონის ნაწილი:', { reply_markup: cancelKb() });
 }
 
 async function onDriverSearch(chatId, text) {
@@ -1527,8 +1531,8 @@ async function onDrvEditStart(query) {
   updateDrvMgmt(chatId, { driverId: id, editField: field });
   setStep(chatId, STEPS.AWAIT_DRV_EDIT_FIELD);
   return bot.sendMessage(chatId,
-    `✏️ ახალი მნიშვნელობა — *${FIELD_LABELS[field] || field}* (ან /cancel):`,
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    `✏️ ახალი მნიშვნელობა — *${FIELD_LABELS[field] || field}*:`,
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
   );
 }
 
@@ -1550,6 +1554,22 @@ async function onDrvToggle(query) {
   const label  = result.is_active ? '✅ განბლოკილია' : '🔴 დაბლოკილია';
   await bot.sendMessage(chatId, `${label}: *${result.full_name}*`, { parse_mode: 'Markdown' });
   return showDriverProfile(chatId, id);
+}
+
+async function onCancelInput(query) {
+  const chatId = query.message.chat.id;
+  clearOrder(chatId);
+  clearBonus(chatId);
+  clearWd(chatId);
+  clearDrvMgmt(chatId);
+  clearPassMgmt(chatId);
+  clearBroadcast(chatId);
+  setStep(chatId, STEPS.IDLE);
+  await bot.answerCallbackQuery(query.id, { text: '❌ გაუქმდა.' });
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+  return bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenu() });
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────

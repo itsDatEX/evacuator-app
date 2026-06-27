@@ -170,6 +170,46 @@ async function notifyPassengerTripCompleted(orderId, passengerTelegramId) {
 function getDriverBot()    { return _driverBot; }
 function getPassengerBot() { return _passengerBot; }
 
+// Called when a driver goes available — sends any waiting pending orders they missed.
+async function notifyDriverOfPendingOrders(driver, orders) {
+  if (!_driverBot || !orders.length) return;
+  for (const order of orders) {
+    try {
+      const sizeLabel = order.vehicle_size === 'jeep'
+        ? '🚐 ჯიპი'
+        : order.vehicle_size === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+      const rollLabel = order.can_roll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
+      const sourceTag = order.source === 'phone' ? '📞 ტელეფონით' : '📱 ბოტიდან';
+      const phoneInfo = order.source === 'phone' && order.caller_phone
+        ? `\n📱 მგზავრის ნომ.: ${order.caller_phone}` : '';
+
+      const text =
+        `🔔 *მოლოდინში შეკვეთა #${order.id}* (${sourceTag})\n\n` +
+        `📍 ${order.pickup_address}\n` +
+        `🏁 ${order.destination_address}\n` +
+        `${sizeLabel} | ${rollLabel}${phoneInfo}\n` +
+        `💰 ${order.price} ₾`;
+
+      const sent = await _driverBot.sendMessage(driver.telegram_id, text, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✅ შეკვეთის მიღება', callback_data: `accept:${order.id}` },
+            { text: '⏭ გამოტოვება',      callback_data: `skip:${order.id}` },
+          ]],
+        },
+      });
+
+      if (!_orderMsgIds.has(order.id)) _orderMsgIds.set(order.id, new Map());
+      _orderMsgIds.get(order.id).set(driver.telegram_id, sent.message_id);
+    } catch (err) {
+      logger.warn('Could not re-notify driver of pending order', {
+        driverId: driver.id, orderId: order.id, error: err.message,
+      });
+    }
+  }
+}
+
 module.exports = {
   setDriverBot,
   setPassengerBot,
@@ -181,4 +221,5 @@ module.exports = {
   notifyPassengerTripStarted,
   notifyPassengerTripCompleted,
   notifyDriversOrderTaken,
+  notifyDriverOfPendingOrders,
 };

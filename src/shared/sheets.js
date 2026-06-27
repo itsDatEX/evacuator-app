@@ -19,8 +19,9 @@ const sheets = google.sheets({ version: 'v4', auth });
 // Expected "Config" sheet, columns A (key) | B (value):
 //   base_fare               | 20
 //   price_per_km            | 1.50
-//   large_vehicle_surcharge | 15
-//   non_rolling_surcharge   | 25
+//   jeep_surcharge          | 0.15   (fraction of base, e.g. 0.15 = +15%)
+//   large_vehicle_surcharge | 0.15   (fraction of base)
+//   non_rolling_surcharge   | 0.30   (fraction of base)
 //   bonus_threshold         | 10
 //   bonus_amount            | 20
 //   commission_rate         | 0.15
@@ -44,7 +45,8 @@ async function getPricingConfig() {
   }
 
   const required = [
-    'base_fare', 'price_per_km', 'large_vehicle_surcharge', 'non_rolling_surcharge',
+    'base_fare', 'price_per_km',
+    'jeep_surcharge', 'large_vehicle_surcharge', 'non_rolling_surcharge',
     'bonus_threshold', 'bonus_amount', 'commission_rate',
   ];
   for (const field of required) {
@@ -56,6 +58,7 @@ async function getPricingConfig() {
   _cache = {
     baseFare:              raw['base_fare'],
     pricePerKm:            raw['price_per_km'],
+    jeepSurcharge:         raw['jeep_surcharge'],
     largeVehicleSurcharge: raw['large_vehicle_surcharge'],
     nonRollingSurcharge:   raw['non_rolling_surcharge'],
     bonusThreshold:        raw['bonus_threshold'],
@@ -67,18 +70,23 @@ async function getPricingConfig() {
   return _cache;
 }
 
-// vehicleSize: 'normal' | 'large'
+// vehicleSize: 'normal' | 'jeep' | 'large'
 // canRoll: boolean
 // discountAmount: ₾ to subtract (passenger loyalty discount); capped at subtotal
+// Surcharges are fractions of base (e.g. 0.15 = +15% of base fare).
 async function calculatePrice(distanceKm, vehicleSize, canRoll, discountAmount = 0) {
   const cfg = await getPricingConfig();
 
-  const base     = cfg.baseFare + cfg.pricePerKm * distanceKm;
-  const sizeFee  = vehicleSize === 'large' ? cfg.largeVehicleSurcharge : 0;
-  const craneFee = canRoll ? 0 : cfg.nonRollingSurcharge;
+  const base = cfg.baseFare + cfg.pricePerKm * distanceKm;
+
+  let sizeFee = 0;
+  if (vehicleSize === 'jeep')  sizeFee = Math.round(base * cfg.jeepSurcharge * 100) / 100;
+  if (vehicleSize === 'large') sizeFee = Math.round(base * cfg.largeVehicleSurcharge * 100) / 100;
+
+  const craneFee = canRoll ? 0 : Math.round(base * cfg.nonRollingSurcharge * 100) / 100;
   const subtotal = base + sizeFee + craneFee;
 
-  const discount = Math.min(discountAmount, subtotal); // can't go below 0
+  const discount = Math.min(discountAmount, subtotal);
   const total    = Math.round((subtotal - discount) * 100) / 100;
 
   return {

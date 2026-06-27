@@ -217,13 +217,17 @@ async function onPickupLoc(msg) {
 
 // ── Pickup — text branch ──────────────────────────────────────────────────────
 
+function cancelKb() {
+  return { inline_keyboard: [[{ text: '❌ გაუქმება', callback_data: 'cancel_input' }]] };
+}
+
 async function onPickupMethodText(msg) {
   const chatId = msg.chat.id;
   setStep(chatId, STEPS.AWAIT_PICKUP_TEXT);
   return bot.sendMessage(
     chatId,
     '✏️ ჩაწერეთ საწყისი მისამართი:\n_(მაგ: ჭავჭავაძის 25, თბილისი)_',
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
   );
 }
 
@@ -291,8 +295,9 @@ async function onDestLoc(msg) {
     {
       reply_markup: {
         inline_keyboard: [[
-          { text: '🚗 ჩვეულებრივი',          callback_data: 'vsize:normal' },
-          { text: '🚌 დიდი (მიკრო/სატვირთო)', callback_data: 'vsize:large'  },
+          { text: '🚙 ჩვეულებრივი', callback_data: 'vsize:normal' },
+          { text: '🚐 ჯიპი',        callback_data: 'vsize:jeep'   },
+          { text: '🚌 დიდი ავტ.',   callback_data: 'vsize:large'  },
         ]],
       },
     }
@@ -307,7 +312,7 @@ async function onDestMethodText(msg) {
   return bot.sendMessage(
     chatId,
     '✏️ ჩაწერეთ დანიშნულების მისამართი:\n_(მაგ: ვარკეთილი 3, თბილისი)_',
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
   );
 }
 
@@ -400,8 +405,9 @@ async function onGeoConfirm(query) {
     {
       reply_markup: {
         inline_keyboard: [[
-          { text: '🚗 ჩვეულებრივი',          callback_data: 'vsize:normal' },
-          { text: '🚌 დიდი (მიკრო/სატვირთო)', callback_data: 'vsize:large'  },
+          { text: '🚙 ჩვეულებრივი', callback_data: 'vsize:normal' },
+          { text: '🚐 ჯიპი',        callback_data: 'vsize:jeep'   },
+          { text: '🚌 დიდი ავტ.',   callback_data: 'vsize:large'  },
         ]],
       },
     }
@@ -416,7 +422,15 @@ bot.on('callback_query', async (query) => {
   const data = query.data;
 
   try {
-    if (data.startsWith('rate_driver:')) {
+    if (data === 'cancel_input') {
+      clearOrder(chatId);
+      setStep(chatId, STEPS.IDLE);
+      await bot.answerCallbackQuery(query.id, { text: '❌ გაუქმდა.' });
+      await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+        chat_id: chatId, message_id: query.message.message_id,
+      }).catch(() => {});
+      await bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenuKeyboard() });
+    } else if (data.startsWith('rate_driver:')) {
       await onRateDriver(query);
     } else if (data.startsWith('geo_confirm:') &&
         (step === STEPS.AWAIT_PICKUP_CONFIRM || step === STEPS.AWAIT_DEST_CONFIRM)) {
@@ -446,7 +460,7 @@ async function onVehicleSize(query) {
   setStep(chatId, STEPS.AWAIT_CAN_ROLL);
   await bot.answerCallbackQuery(query.id);
 
-  const label = vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+  const label = vehicleSize === 'jeep' ? '🚐 ჯიპი' : vehicleSize === 'large' ? '🚌 დიდი ავტ.' : '🚙 ჩვეულებრივი';
   return bot.sendMessage(
     chatId,
     `✅ მანქანის ტიპი: ${label}\n\n` +
@@ -490,7 +504,7 @@ async function onCanRoll(query) {
 
   const { order: o } = getSession(chatId);
   const bd        = priceResult.breakdown;
-  const sizeLabel = o.vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+  const sizeLabel = o.vehicleSize === 'jeep' ? '🚐 ჯიპი' : o.vehicleSize === 'large' ? '🚌 დიდი ავტ.' : '🚙 ჩვეულებრივი';
   const rollLabel = canRoll ? '✅ გორავს' : '❌ არ გორავს';
 
   const extraLines = [];

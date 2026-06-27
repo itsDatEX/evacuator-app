@@ -18,6 +18,7 @@ const {
   getDriverHistory, getDriverStats, getEligibleDrivers,
   ratePassenger, getOrderById,
   getDriverWithdrawalsToday, recordSelfWithdrawal,
+  getPendingOrdersMatchingDriver,
 } = require('../shared/orderService');
 const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
@@ -53,13 +54,16 @@ function mainMenuKeyboard() {
   return {
     keyboard: [
       [{ text: '✅ ხელმისაწვდომი ვარ' }, { text: '❌ მიუწვდომელი ვარ' }],
-      [{ text: '🛣️ მარშრუტზე ვარ' },    { text: '🗑️ მარშრუტი გავასუფთავე' }],
       [{ text: '📋 ჩემი შეკვეთები' },    { text: '⭐ სტატისტიკა' }],
       [{ text: '💰 ჩემი ბალანსი' },      { text: '💸 ფულის გატანა' }],
       [{ text: '✏️ ჩემი მონაცემები' }],
     ],
     resize_keyboard: true,
   };
+}
+
+function cancelKeyboard() {
+  return { inline_keyboard: [[{ text: '❌ გაუქმება', callback_data: 'cancel_input' }]] };
 }
 
 function locationMethodKeyboard() {
@@ -275,10 +279,20 @@ async function onMenuAction(msg) {
   }
 
   switch (text) {
-    case '✅ ხელმისაწვდომი ვარ':
+    case '✅ ხელმისაწვდომი ვარ': {
       await setAvailability(driver.telegram_id, true);
-      return bot.sendMessage(chatId, '✅ სტატუსი განახლდა — ხელმისაწვდომი ხართ. ახალი შეკვეთები მოვა.',
-        { reply_markup: mainMenuKeyboard() });
+      const pending = await getPendingOrdersMatchingDriver(driver);
+      if (pending.length > 0) {
+        await bot.sendMessage(chatId,
+          `✅ ხელმისაწვდომი ხართ. *${pending.length}* მოლოდინში შეკვეთა გამოგეგზავნათ:`,
+          { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() });
+        await notifier.notifyDriverOfPendingOrders(driver, pending);
+      } else {
+        await bot.sendMessage(chatId, '✅ სტატუსი განახლდა — ხელმისაწვდომი ხართ. ახალი შეკვეთები მოვა.',
+          { reply_markup: mainMenuKeyboard() });
+      }
+      return;
+    }
 
     case '❌ მიუწვდომელი ვარ':
       await setAvailability(driver.telegram_id, false);
@@ -535,10 +549,14 @@ bot.on('callback_query', async (query) => {
       await onRatePassenger(query);
     } else if (data.startsWith('self_edit:')) {
       await onSelfEditField(query);
+    } else if (data.startsWith('self_cat:')) {
+      await onSelfCatSelect(query);
     } else if (data === 'self_wd_confirm') {
       await onSelfWdConfirm(query);
     } else if (data === 'self_wd_cancel') {
       await onSelfWdCancel(query);
+    } else if (data === 'cancel_input') {
+      await onCancelInput(query);
     } else {
       await bot.answerCallbackQuery(query.id);
     }
@@ -926,27 +944,33 @@ async function showStats(chatId, driverId) {
 
 // ── Self-service profile edit ──────────────────────────────────────────────────
 
+const CAR_CATEGORY_LABELS = { normal: '🚗 ჩვეულებრივი', jeep: '🚐 ჯიპი', large: '🚌 დიდი ავტ.' };
+
 function showSelfEditMenu(chatId, driver) {
-  const iban = driver.bank_account ? `\n🏦 IBAN: \`${driver.bank_account}\`` : '';
+  const iban    = driver.bank_account  ? `\n🏦 IBAN: \`${driver.bank_account}\`` : '';
+  const catLine = driver.car_category  ? `\n🚛 კატ.: ${CAR_CATEGORY_LABELS[driver.car_category] || driver.car_category}` : '';
   return bot.sendMessage(
     chatId,
     `✏️ *ჩემი მონაცემები*\n\n` +
     `👤 ${driver.full_name}\n` +
     `📱 ${driver.phone || '—'}\n` +
     `🚘 ${driver.car_model || '—'}  |  🔢 ${driver.car_plate || '—'}` +
-    iban +
+    iban + catLine +
     `\n\nაირჩიეთ ველი რედაქტირებისთვის:`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '📱 ტელეფონი',  callback_data: 'self_edit:phone' },
-            { text: '🚘 მოდელი',    callback_data: 'self_edit:car_model' },
+            { text: '📱 ტელეფონი',            callback_data: 'self_edit:phone' },
+            { text: '🚘 მოდელი',              callback_data: 'self_edit:car_model' },
           ],
           [
-            { text: '🔢 ნომერი',    callback_data: 'self_edit:car_plate' },
-            { text: '🏦 ანგარიში',  callback_data: 'self_edit:bank_account' },
+            { text: '🔢 ავტომობილის ნომ.',   callback_data: 'self_edit:car_plate' },
+            { text: '🏦 საბანკო ანგ.',        callback_data: 'self_edit:bank_account' },
+          ],
+          [
+            { text: '🚛 მანქანის კატეგ.',     callback_data: 'self_edit:car_category' },
           ],
         ],
       },
@@ -957,17 +981,52 @@ function showSelfEditMenu(chatId, driver) {
 async function onSelfEditField(query) {
   const chatId = query.message.chat.id;
   const field  = query.data.split(':')[1];
-  const label  = SELF_EDIT_LABELS[field];
-  if (!label) return bot.answerCallbackQuery(query.id);
 
   await bot.answerCallbackQuery(query.id);
+
+  if (field === 'car_category') {
+    return bot.sendMessage(chatId, '🚛 *მანქანის კატეგ. — აირჩიეთ:*', {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🚗 ჩვეულებრივი', callback_data: 'self_cat:normal' },
+          { text: '🚐 ჯიპი',        callback_data: 'self_cat:jeep'   },
+          { text: '🚌 დიდი ავტ.',   callback_data: 'self_cat:large'  },
+        ]],
+      },
+    });
+  }
+
+  const label = SELF_EDIT_LABELS[field];
+  if (!label) return;
+
   getSession(chatId).selfEdit = { field };
   setStep(chatId, STEPS.AWAIT_SELF_EDIT_FIELD);
 
   return bot.sendMessage(chatId, `✏️ შეიყვანეთ ახალი *${label}*:`, {
     parse_mode: 'Markdown',
-    reply_markup: { remove_keyboard: true },
+    reply_markup: cancelKeyboard(),
   });
+}
+
+async function onSelfCatSelect(query) {
+  const chatId   = query.message.chat.id;
+  const category = query.data.split(':')[1];
+  if (!['normal', 'jeep', 'large'].includes(category)) {
+    return bot.answerCallbackQuery(query.id);
+  }
+
+  const driver = await findByTelegramId(query.from.id);
+  if (!driver) return bot.answerCallbackQuery(query.id, { text: '❌ შეცდომა.' });
+
+  await updateDriverField(driver.id, 'car_category', category);
+  await bot.answerCallbackQuery(query.id, { text: `✅ ${CAR_CATEGORY_LABELS[category]}` });
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+
+  const updated = await findByTelegramId(query.from.id);
+  return showSelfEditMenu(chatId, updated);
 }
 
 async function onSelfEditValue(msg) {
@@ -1003,7 +1062,7 @@ async function onSelfWdStart(chatId, driver) {
     return bot.sendMessage(
       chatId,
       '🏦 გატანისთვის ჯერ მიუთითეთ საბანკო ანგარიშის ნომერი (IBAN):',
-      { reply_markup: { remove_keyboard: true } }
+      { reply_markup: cancelKeyboard() }
     );
   }
   return showSelfWdAmountPrompt(chatId, driver);
@@ -1043,7 +1102,7 @@ async function showSelfWdAmountPrompt(chatId, driver) {
     `🔢 დარჩენილი: *${remaining.toFixed(2)} ₾*\n\n` +
     `საკომისიო: < 300₾ → 1₾  |  300–500₾ → 2₾\n\n` +
     `შეიყვანეთ გასატანი თანხა:`,
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    { parse_mode: 'Markdown', reply_markup: cancelKeyboard() }
   );
 }
 
@@ -1168,6 +1227,19 @@ async function onSelfWdCancel(query) {
     chat_id: chatId, message_id: query.message.message_id,
   }).catch(() => {});
   return bot.sendMessage(chatId, '❌ გატანა გაუქმდა.', { reply_markup: mainMenuKeyboard() });
+}
+
+async function onCancelInput(query) {
+  const chatId = query.message.chat.id;
+  clearSelfEdit(chatId);
+  clearSelfWd(chatId);
+  clearRouteSession(chatId);
+  setStep(chatId, STEPS.IDLE);
+  await bot.answerCallbackQuery(query.id, { text: '❌ გაუქმდა.' });
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+  return bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenuKeyboard() });
 }
 
 // ── Error handling ─────────────────────────────────────────────────────────────
