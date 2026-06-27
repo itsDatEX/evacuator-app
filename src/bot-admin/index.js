@@ -19,7 +19,7 @@ const {
   getDriverRatings, getDriverRatingHistory,
   getPassengerRatings, getPassengerRatingHistory, getPassengerStats,
   getPassengerOrderStats, getCompletedOrdersForExport,
-  getPassengerOrderHistory, getDriverWithdrawalHistory,
+  getAllWithdrawals, getPassengerOrderHistory, getDriverWithdrawalHistory,
 } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const {
@@ -158,6 +158,9 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
     else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
+    // Withdrawal history (all)
+    else if (data === 'adm_wdall_menu')            await showWdAllMenu(query);
+    else if (data.startsWith('adm_wdall:'))        await onWdAll(query);
     // Withdrawal (entry only from driver profile)
     else if (data.startsWith('adm_wd_drv:'))       await onWdDriverSelected(query);
     else if (data.startsWith('adm_wd_method:'))    await onWdMethod(query);
@@ -962,11 +965,85 @@ async function showBalanceMenu(chatId) {
   const cfg = await getPricingConfig().catch(() => null);
   const commTxt = cfg ? `\n\n⚙️ საკომისიო: *${(cfg.commissionRate * 100).toFixed(0)}%* (შეცვლა — Sheets Config tab)` : '';
 
-  return bot.sendMessage(chatId,
+  await bot.sendMessage(chatId,
     `💰 *მძღოლების ბალანსები*\n\n${lines.join('\n')}${commTxt}`,
     { parse_mode: 'Markdown' }
   );
+  return bot.sendMessage(chatId, '📜 გატანების ისტ.:', {
+    reply_markup: { inline_keyboard: [[
+      { text: '📜 ყველა გატანის ისტორია', callback_data: 'adm_wdall_menu' },
+    ]] },
+  });
 }
+
+// ══ WITHDRAWAL HISTORY (ALL) ═════════════════════════════════════════════════
+
+const WD_PERIOD_LABELS = { today: '📅 დღეს', week: '📅 ეს კვირა', month: '📅 ეს თვე', all: '📅 ყველა' };
+
+const WD_PERIOD_KB = { inline_keyboard: [
+  [
+    { text: '📅 დღეს',      callback_data: 'adm_wdall:today:0' },
+    { text: '📅 ეს კვირა', callback_data: 'adm_wdall:week:0'  },
+  ],
+  [
+    { text: '📅 ეს თვე',  callback_data: 'adm_wdall:month:0' },
+    { text: '📅 ყველა',   callback_data: 'adm_wdall:all:0'   },
+  ],
+] };
+
+async function showWdAllMenu(query) {
+  await bot.answerCallbackQuery(query.id);
+  return bot.sendMessage(query.message.chat.id, '📜 *გატანების ისტორია — პერიოდი:*', {
+    parse_mode: 'Markdown',
+    reply_markup: WD_PERIOD_KB,
+  });
+}
+
+async function onWdAll(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId  = query.message.chat.id;
+  const parts   = query.data.split(':');   // adm_wdall:{period}:{page}
+  const period  = parts[1];
+  const page    = parseInt(parts[2], 10) || 0;
+  const offset  = page * 10;
+
+  const { rows, total } = await getAllWithdrawals(period, offset);
+
+  if (!total) {
+    return bot.sendMessage(chatId,
+      `📜 *${WD_PERIOD_LABELS[period]}* — გატანა არ ყოფილა.`,
+      { parse_mode: 'Markdown', reply_markup: WD_PERIOD_KB }
+    );
+  }
+
+  const lines = rows.map((w, i) => {
+    const dt     = new Date(w.created_at);
+    const date   = dt.toLocaleDateString('ka-GE');
+    const time   = dt.toLocaleTimeString('ka-GE', { hour: '2-digit', minute: '2-digit' });
+    const method = w.method === 'card' ? '💳' : '💵';
+    const admin  = w.admin_name || '—';
+    const drv    = `${w.driver_name || '—'}${w.driver_phone ? ` | 📞 ${w.driver_phone}` : ''}`;
+    return `${offset + i + 1}. ${method} *${w.amount} ₾* | ${date} ${time}\n   👤 ${drv}\n   ⚙️ ${admin}`;
+  });
+
+  const totalPages = Math.ceil(total / 10);
+  const navRow     = [];
+  if (page > 0)              navRow.push({ text: '← წინა',    callback_data: `adm_wdall:${period}:${page - 1}` });
+  navRow.push({ text: `${page + 1}/${totalPages}`, callback_data: 'noop' });
+  if (page + 1 < totalPages) navRow.push({ text: 'შემდეგი →', callback_data: `adm_wdall:${period}:${page + 1}` });
+
+  const kb = { inline_keyboard: [] };
+  if (navRow.length > 1) kb.inline_keyboard.push(navRow);
+  kb.inline_keyboard.push([{ text: '🔄 პერიოდი', callback_data: 'adm_wdall_menu' }]);
+
+  const header = `📜 *გატანები | ${WD_PERIOD_LABELS[period]}* (სულ: ${total})`;
+  return bot.sendMessage(chatId,
+    `${header}\n\n${lines.join('\n\n')}`,
+    { parse_mode: 'Markdown', reply_markup: kb }
+  );
+}
+
+// ══ WITHDRAWAL FLOW (inline-keyboard driven) ══════════════════════════════════
 
 async function onWdDriverSelected(query) {
   await bot.answerCallbackQuery(query.id);

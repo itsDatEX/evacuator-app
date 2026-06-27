@@ -276,6 +276,38 @@ async function recordWithdrawal(driverId, amount, method, adminInfo = {}) {
   }
 }
 
+const WD_PERIOD_SQL = {
+  today: `w.created_at >= CURRENT_DATE`,
+  week:  `w.created_at >= date_trunc('week',  NOW())`,
+  month: `w.created_at >= date_trunc('month', NOW())`,
+  all:   `TRUE`,
+};
+
+async function getAllWithdrawals(period = 'all', offset = 0) {
+  const where = WD_PERIOD_SQL[period] || WD_PERIOD_SQL.all;
+  const [{ rows }, { rows: cnt }] = await Promise.all([
+    pool.query(
+      `SELECT
+         w.id, w.created_at, w.amount, w.method,
+         w.admin_name, w.admin_phone,
+         d.full_name AS driver_name, d.phone AS driver_phone
+       FROM withdrawals w
+       JOIN drivers d ON w.driver_id = d.id
+       WHERE ${where}
+       ORDER BY w.created_at DESC
+       LIMIT 10 OFFSET $1`,
+      [offset]
+    ),
+    pool.query(
+      `SELECT COUNT(*) AS total
+       FROM withdrawals w
+       JOIN drivers d ON w.driver_id = d.id
+       WHERE ${where}`
+    ),
+  ]);
+  return { rows, total: parseInt(cnt[0].total, 10) };
+}
+
 async function getPassengerOrderHistory(passengerId) {
   const { rows } = await pool.query(`
     SELECT
@@ -686,6 +718,7 @@ module.exports = {
   getPassengerStats,
   getPassengerOrderStats,
   getCompletedOrdersForExport,
+  getAllWithdrawals,
   getPassengerOrderHistory,
   getDriverWithdrawalHistory,
 };
