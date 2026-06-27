@@ -247,13 +247,21 @@ async function getDriverBalances() {
 
 // Admin: record a withdrawal; decrements driver.balance atomically.
 // method: 'cash' | 'card'
-async function recordWithdrawal(driverId, amount, method, note = null) {
+// adminInfo: { telegramId, name, phone }
+async function recordWithdrawal(driverId, amount, method, adminInfo = {}) {
+  const {
+    telegramId: adminTelegramId = null,
+    name:       adminName       = null,
+    phone:      adminPhone      = null,
+  } = adminInfo;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(
-      'INSERT INTO withdrawals (driver_id, amount, note, method) VALUES ($1, $2, $3, $4)',
-      [driverId, amount, note, method || 'cash']
+      `INSERT INTO withdrawals
+         (driver_id, amount, method, admin_telegram_id, admin_name, admin_phone)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [driverId, amount, method || 'cash', adminTelegramId, adminName, adminPhone]
     );
     await client.query(
       'UPDATE drivers SET balance = balance - $1 WHERE id = $2',
@@ -266,6 +274,21 @@ async function recordWithdrawal(driverId, amount, method, note = null) {
   } finally {
     client.release();
   }
+}
+
+async function getPassengerOrderHistory(passengerId) {
+  const { rows } = await pool.query(`
+    SELECT
+      o.id, o.created_at, o.status, o.price, o.payment_method,
+      o.pickup_address, o.destination_address,
+      d.full_name AS driver_name
+    FROM orders o
+    LEFT JOIN drivers d ON o.driver_id = d.id
+    WHERE o.passenger_id = $1
+    ORDER BY o.created_at DESC
+    LIMIT 20
+  `, [passengerId]);
+  return rows;
 }
 
 async function getDriverWithdrawalHistory(driverId) {
@@ -663,5 +686,6 @@ module.exports = {
   getPassengerStats,
   getPassengerOrderStats,
   getCompletedOrdersForExport,
+  getPassengerOrderHistory,
   getDriverWithdrawalHistory,
 };

@@ -45,11 +45,25 @@ async function clearRoute(telegramId) {
 async function getAllDrivers({ limit = 20, offset = 0 } = {}) {
   const { rows } = await pool.query(
     `SELECT id, telegram_id, full_name, phone, truck_type,
-            is_active, is_available, balance, car_model, car_plate
+            is_active, is_available, balance, car_model, car_plate, bank_account
      FROM drivers
      ORDER BY is_active DESC, full_name ASC
      LIMIT $1 OFFSET $2`,
     [limit, offset]
+  );
+  return rows;
+}
+
+async function searchDrivers(query) {
+  const { rows } = await pool.query(
+    `SELECT id, telegram_id, full_name, phone, truck_type,
+            is_active, is_available, balance, car_model, car_plate, bank_account
+     FROM drivers
+     WHERE full_name ILIKE '%' || $1 || '%'
+        OR phone     ILIKE '%' || $1 || '%'
+     ORDER BY is_active DESC, full_name ASC
+     LIMIT 8`,
+    [query.trim()]
   );
   return rows;
 }
@@ -72,7 +86,7 @@ async function findDriverByPhone(phone) {
   return rows[0] || null;
 }
 
-const EDITABLE_FIELDS = { full_name: true, phone: true, car_model: true, car_plate: true };
+const EDITABLE_FIELDS = { full_name: true, phone: true, car_model: true, car_plate: true, bank_account: true };
 
 async function updateDriverField(driverId, field, value) {
   if (!EDITABLE_FIELDS[field]) throw new Error(`Field "${field}" is not editable`);
@@ -114,7 +128,7 @@ module.exports = {
   findByTelegramId, createDriver,
   setAvailability, setRoute, clearRoute,
   addBonusBalance,
-  getAllDrivers, countDrivers,
+  getAllDrivers, countDrivers, searchDrivers,
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive,
   getActiveDriverTelegramIds,

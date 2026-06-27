@@ -74,6 +74,19 @@ async function findPassengerByPhone(phone) {
   return rows[0] || null;
 }
 
+async function searchPassengers(query) {
+  const { rows } = await pool.query(
+    `SELECT id, telegram_id, full_name, phone, is_active, discount_available, created_at
+     FROM passengers
+     WHERE full_name ILIKE '%' || $1 || '%'
+        OR phone     ILIKE '%' || $1 || '%'
+     ORDER BY created_at DESC
+     LIMIT 8`,
+    [query.trim()]
+  );
+  return rows;
+}
+
 const PASS_EDITABLE_FIELDS = { full_name: true, phone: true };
 
 async function updatePassengerField(passengerId, field, value) {
@@ -103,7 +116,7 @@ async function getActivePassengerTelegramIds() {
 
 module.exports = {
   findByTelegramId, createPassenger, addDiscount, consumeDiscount,
-  getAllPassengers, countPassengers,
+  getAllPassengers, countPassengers, searchPassengers,
   findPassengerById, findPassengerByPhone,
   updatePassengerField, togglePassengerActive,
   getActivePassengerTelegramIds,

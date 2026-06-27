@@ -19,19 +19,19 @@ const {
   getDriverRatings, getDriverRatingHistory,
   getPassengerRatings, getPassengerRatingHistory, getPassengerStats,
   getPassengerOrderStats, getCompletedOrdersForExport,
-  getDriverWithdrawalHistory,
+  getPassengerOrderHistory, getDriverWithdrawalHistory,
 } = require('../shared/orderService');
 const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
 const {
   addDiscount,
-  getAllPassengers, countPassengers,
+  getAllPassengers, countPassengers, searchPassengers,
   findPassengerById, findPassengerByPhone,
   updatePassengerField, togglePassengerActive,
   getActivePassengerTelegramIds,
 } = require('../shared/passengerService');
 const {
   addBonusBalance,
-  getAllDrivers, countDrivers,
+  getAllDrivers, countDrivers, searchDrivers,
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive,
   getActiveDriverTelegramIds,
@@ -108,10 +108,10 @@ bot.on('message', guard(async (msg) => {
         else if (msg.text === '📋 ბოლო შეკვეთები')           await showHistory(chatId);
         else if (msg.text === '🎁 ბონუსები')                  await showBonusMenu(chatId);
         else if (msg.text === '💰 ბალანსები')                 await showBalanceMenu(chatId);
-        else if (msg.text === '🚚 მძღოლები')                  await showDriverList(chatId, 0);
+        else if (msg.text === '🚚 მძღოლები')                  await showDriverMenu(chatId);
         else if (msg.text === '🚨 აქტიური შეკვეთები')         await showActiveOrders(chatId);
         else if (msg.text === '⭐ რეიტინგები')               await showRatingMenu(chatId);
-        else if (msg.text === '👥 მგზავრები')               await showPassengerList(chatId, 0);
+        else if (msg.text === '👥 მგზავრები')               await showPassengerMenu(chatId);
         else if (msg.text === '📢 ეცნობოთ ყველას')         await showBroadcastMenu(chatId);
         else if (msg.text === '📄 ექსპორტი')               await showExportMenu(chatId);
         break;
@@ -126,7 +126,8 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_DISC_PASS_ID:    await onDiscPassId(chatId, msg.text);    break;
       case STEPS.AWAIT_DISC_AMOUNT:     await onDiscAmount(chatId, msg.text);    break;
       // Withdrawal flow
-      case STEPS.AWAIT_WD_AMOUNT: await onWdAmount(chatId, msg.text); break;
+      case STEPS.AWAIT_WD_BANK_ACCOUNT: await onWdBankAccount(chatId, msg.text); break;
+      case STEPS.AWAIT_WD_AMOUNT:       await onWdAmount(chatId, msg.text);       break;
       // Driver management
       case STEPS.AWAIT_DRV_SEARCH:      await onDriverSearch(chatId, msg.text);      break;
       case STEPS.AWAIT_DRV_EDIT_FIELD:  await onDriverEditValue(chatId, msg.text);   break;
@@ -157,11 +158,9 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
     else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
-    // Withdrawal
-    else if (data === 'adm_wd_start')              await onWdStart(query);
+    // Withdrawal (entry only from driver profile)
     else if (data.startsWith('adm_wd_drv:'))       await onWdDriverSelected(query);
     else if (data.startsWith('adm_wd_method:'))    await onWdMethod(query);
-    else if (data === 'adm_wdhist')                await onWdHistStart(query);
     else if (data.startsWith('adm_wdhist_drv:'))   await onWdHistDriver(query);
     // Broadcast
     else if (data.startsWith('adm_bc:'))           await onBroadcastTarget(query);
@@ -180,7 +179,8 @@ bot.on('callback_query', async (query) => {
     else if (data === 'adm_pass_search')           await onPassSearchStart(query);
     else if (data.startsWith('adm_pass_edit:'))    await onPassEditStart(query);
     else if (data.startsWith('adm_pass_toggle:'))  await onPassToggle(query);
-    else if (data === 'adm_pass_back')             { await bot.answerCallbackQuery(query.id); await showPassengerList(chatId, 0); }
+    else if (data.startsWith('adm_pass_hist:'))    await onPassOrderHistory(query);
+    else if (data === 'adm_pass_back')             { await bot.answerCallbackQuery(query.id); await showPassengerMenu(chatId); }
     else if (data.startsWith('adm_pass:'))         await onPassProfile(query);
     // Driver management
     else if (data.startsWith('adm_drv_list:'))     await onDrvList(query);
@@ -188,7 +188,7 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_drv:'))          await onDrvProfile(query);
     else if (data.startsWith('adm_drv_edit:'))     await onDrvEditStart(query);
     else if (data.startsWith('adm_drv_toggle:'))   await onDrvToggle(query);
-    else if (data === 'adm_drv_back')              { await bot.answerCallbackQuery(query.id); await showDriverList(chatId, 0); }
+    else if (data === 'adm_drv_back')              { await bot.answerCallbackQuery(query.id); await showDriverMenu(chatId); }
     else if (data === 'noop')                      await bot.answerCallbackQuery(query.id);
     else await bot.answerCallbackQuery(query.id);
   } catch (err) {
@@ -962,40 +962,10 @@ async function showBalanceMenu(chatId) {
   const cfg = await getPricingConfig().catch(() => null);
   const commTxt = cfg ? `\n\n⚙️ საკომისიო: *${(cfg.commissionRate * 100).toFixed(0)}%* (შეცვლა — Sheets Config tab)` : '';
 
-  await bot.sendMessage(chatId,
+  return bot.sendMessage(chatId,
     `💰 *მძღოლების ბალანსები*\n\n${lines.join('\n')}${commTxt}`,
     { parse_mode: 'Markdown' }
   );
-
-  return bot.sendMessage(chatId, 'მოქმედება:', {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '➖ გატანის ჩაწერა',  callback_data: 'adm_wd_start' }],
-        [{ text: '📋 გატანის ისტორია', callback_data: 'adm_wdhist'   }],
-      ],
-    },
-  });
-}
-
-async function onWdStart(query) {
-  await bot.answerCallbackQuery(query.id);
-  const chatId = query.message.chat.id;
-  clearWd(chatId);
-
-  const drivers = await getDriverBalances();
-  if (!drivers.length) {
-    return bot.sendMessage(chatId, '⚠️ აქტიური მძღოლები ვერ მოიძებნა.', { reply_markup: mainMenu() });
-  }
-
-  const rows = drivers.map(d => {
-    const warn = parseFloat(d.balance) < 0 ? ' ⚠️' : '';
-    return [{ text: `${d.full_name} | ${d.balance} ₾${warn}`, callback_data: `adm_wd_drv:${d.id}` }];
-  });
-
-  return bot.sendMessage(chatId, '➖ *გატანა — მძღოლი:*', {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: rows },
-  });
 }
 
 async function onWdDriverSelected(query) {
@@ -1003,19 +973,29 @@ async function onWdDriverSelected(query) {
   const chatId   = query.message.chat.id;
   const driverId = parseInt(query.data.split(':')[1], 10);
 
-  const drivers = await getDriverBalances();
-  const driver  = drivers.find(d => d.id === driverId);
+  // Reset wd — entry may come directly from driver profile
+  getSession(chatId).wd = {};
+
+  const driver = await findDriverById(driverId);
   if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.');
 
-  updateWd(chatId, { driverId, driverName: driver.full_name, driverBalance: driver.balance });
+  const adminName = [query.from.first_name, query.from.last_name].filter(Boolean).join(' ');
+  updateWd(chatId, {
+    driverId,
+    driverName:        driver.full_name,
+    driverBalance:     driver.balance,
+    driverBankAccount: driver.bank_account || null,
+    adminTelegramId:   query.from.id,
+    adminName,
+  });
 
   return bot.sendMessage(chatId,
     `👤 *${driver.full_name}*\n💰 ბალანსი: *${driver.balance} ₾*\n\n💳 გადახდის მეთოდი:`,
     {
       parse_mode: 'Markdown',
       reply_markup: { inline_keyboard: [[
-        { text: '💵 ნაღდი',  callback_data: 'adm_wd_method:cash' },
-        { text: '💳 ბარათი', callback_data: 'adm_wd_method:card' },
+        { text: '💵 ქეშად',   callback_data: 'adm_wd_method:cash' },
+        { text: '💳 ბარათით', callback_data: 'adm_wd_method:card' },
       ]] },
     }
   );
@@ -1026,11 +1006,42 @@ async function onWdMethod(query) {
   const chatId = query.message.chat.id;
   const method = query.data.split(':')[1];
   updateWd(chatId, { method });
+  const { wd } = getSession(chatId);
+
+  if (method === 'card') {
+    if (wd.driverBankAccount) {
+      setStep(chatId, STEPS.AWAIT_WD_AMOUNT);
+      return bot.sendMessage(chatId,
+        `💳 გადარიცხვა: *${wd.driverBankAccount}* ანგარიშზე\n\n💰 გატანის თანხა (₾):`,
+        { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+      );
+    }
+    setStep(chatId, STEPS.AWAIT_WD_BANK_ACCOUNT);
+    return bot.sendMessage(chatId,
+      '🏦 მძღოლს IBAN არ აქვს. შეიყვანეთ ბანკის ანგარიშის ნომერი:',
+      { reply_markup: { remove_keyboard: true } }
+    );
+  }
+
   setStep(chatId, STEPS.AWAIT_WD_AMOUNT);
-  const methodLabel = method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
   return bot.sendMessage(chatId,
-    `${methodLabel}\n\n💰 გატანის თანხა (₾):`,
+    '💵 ქეშად\n\n💰 გატანის თანხა (₾):',
     { reply_markup: { remove_keyboard: true } }
+  );
+}
+
+async function onWdBankAccount(chatId, text) {
+  const iban = text?.trim();
+  if (!iban) return bot.sendMessage(chatId, '⚠️ ჩაწერეთ IBAN:');
+
+  const { wd } = getSession(chatId);
+  await updateDriverField(wd.driverId, 'bank_account', iban);
+  updateWd(chatId, { driverBankAccount: iban });
+  setStep(chatId, STEPS.AWAIT_WD_AMOUNT);
+
+  return bot.sendMessage(chatId,
+    `💳 გადარიცხვა: *${iban}* ანგარიშზე\n\n💰 გატანის თანხა (₾):`,
+    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
   );
 }
 
@@ -1039,34 +1050,17 @@ async function onWdAmount(chatId, text) {
   if (!amount) return bot.sendMessage(chatId, '⚠️ დადებითი რიცხვი:');
 
   const { wd } = getSession(chatId);
-  const { driverId, driverName, driverBalance, method } = wd;
+  const { driverId, driverName, driverBalance, method, adminTelegramId, adminName } = wd;
 
-  await recordWithdrawal(driverId, amount, method);
+  await recordWithdrawal(driverId, amount, method, { telegramId: adminTelegramId, name: adminName, phone: null });
   const newBalance  = parseFloat(driverBalance) - amount;
-  const methodLabel = method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
+  const methodLabel = method === 'card' ? '💳 ბარათი' : '💵 ქეშად';
   clearWd(chatId);
 
   return bot.sendMessage(chatId,
     `✅ *გატანა ჩაიწერა*\n👤 *${driverName}*\n${methodLabel}: ➖ ${amount} ₾\n💰 ახალი ბალანსი: *${newBalance.toFixed(2)} ₾*`,
     { parse_mode: 'Markdown', reply_markup: mainMenu() }
   );
-}
-
-async function onWdHistStart(query) {
-  await bot.answerCallbackQuery(query.id);
-  const chatId = query.message.chat.id;
-
-  const drivers = await getDriverBalances();
-  if (!drivers.length) return bot.sendMessage(chatId, '⚠️ მძღოლები ვერ მოიძებნა.');
-
-  const rows = drivers.map(d => [
-    { text: d.full_name, callback_data: `adm_wdhist_drv:${d.id}` },
-  ]);
-
-  return bot.sendMessage(chatId, '📋 *გატანის ისტორია — მძღოლი:*', {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: rows },
-  });
 }
 
 async function onWdHistDriver(query) {
@@ -1107,6 +1101,16 @@ const PASS_PAGE_SIZE = 8;
 
 const PASS_FIELD_LABELS = { full_name: 'სახელი', phone: 'ტელეფონი' };
 
+async function showPassengerMenu(chatId) {
+  return bot.sendMessage(chatId, '👥 *მგზავრები:*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [
+      [{ text: '📋 ყველა მგზავარი', callback_data: 'adm_pass_list:0' }],
+      [{ text: '🔍 ძებნა',           callback_data: 'adm_pass_search' }],
+    ]},
+  });
+}
+
 async function showPassengerList(chatId, page = 0) {
   const [passengers, total] = await Promise.all([
     getAllPassengers({ limit: PASS_PAGE_SIZE, offset: page * PASS_PAGE_SIZE }),
@@ -1123,11 +1127,9 @@ async function showPassengerList(chatId, page = 0) {
 
   const totalPages = Math.ceil(total / PASS_PAGE_SIZE);
   const navRow     = [];
-  if (page > 0)               navRow.push({ text: '← წინა',     callback_data: `adm_pass_list:${page - 1}` });
+  if (page > 0)              navRow.push({ text: '← წინა',    callback_data: `adm_pass_list:${page - 1}` });
   navRow.push({ text: `${page + 1}/${totalPages}`, callback_data: 'noop' });
-  if (page + 1 < totalPages)  navRow.push({ text: 'შემდეგი →', callback_data: `adm_pass_list:${page + 1}` });
-
-  rows.push([{ text: '🔍 ძებნა (ID ან ტელეფონი)', callback_data: 'adm_pass_search' }]);
+  if (page + 1 < totalPages) navRow.push({ text: 'შემდეგი →', callback_data: `adm_pass_list:${page + 1}` });
   if (navRow.length > 1) rows.push(navRow);
 
   return bot.sendMessage(chatId, `👥 *მგზავრები* (სულ: ${total}):`, {
@@ -1165,13 +1167,52 @@ async function showPassengerProfile(chatId, passengerId) {
       inline_keyboard: [
         [
           { text: '✏️ სახელი',    callback_data: `adm_pass_edit:${p.id}:full_name` },
-          { text: '✏️ ტელეფონი', callback_data: `adm_pass_edit:${p.id}:phone`     },
+          { text: '📱 ტელეფონი', callback_data: `adm_pass_edit:${p.id}:phone`     },
         ],
-        [{ text: toggleLabel,  callback_data: `adm_pass_toggle:${p.id}` }],
-        [{ text: '← სია',      callback_data: 'adm_pass_back'           }],
+        [{ text: '📜 შეკვ. ისტ.',  callback_data: `adm_pass_hist:${p.id}`     }],
+        [{ text: toggleLabel,        callback_data: `adm_pass_toggle:${p.id}`  }],
+        [{ text: '← უკან',           callback_data: 'adm_pass_back'            }],
       ],
     },
   });
+}
+
+async function onPassOrderHistory(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId      = query.message.chat.id;
+  const passengerId = parseInt(query.data.split(':')[1], 10);
+
+  const [history, p] = await Promise.all([
+    getPassengerOrderHistory(passengerId),
+    findPassengerById(passengerId),
+  ]);
+
+  if (!p) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.');
+
+  const backBtn = { reply_markup: { inline_keyboard: [[{ text: '← უკან', callback_data: `adm_pass:${passengerId}` }]] } };
+
+  if (!history.length) {
+    return bot.sendMessage(chatId,
+      `📜 *${p.full_name || '—'}* — შეკვეთები არ არის.`,
+      { parse_mode: 'Markdown', ...backBtn }
+    );
+  }
+
+  const ST = { completed: '✅', cancelled: '❌', pending: '⏳', accepted: '🚗', arrived: '📍', in_progress: '🚛' };
+  const lines = history.map((o, i) => {
+    const date   = new Date(o.created_at).toLocaleDateString('ka-GE');
+    const icon   = ST[o.status] || '•';
+    const pay    = o.payment_method === 'card' ? '💳' : '💵';
+    const from   = (o.pickup_address      || '').substring(0, 16);
+    const to     = (o.destination_address || '').substring(0, 16);
+    const drv    = o.driver_name ? ` | 👤 ${o.driver_name}` : '';
+    return `${i + 1}. ${icon} ${date} | ${o.price} ₾ ${pay}${drv}\n   📍 ${from} → ${to}`;
+  });
+
+  return bot.sendMessage(chatId,
+    `📜 *${p.full_name || '—'}* — ბოლო ${history.length} შეკვ.:\n\n${lines.join('\n\n')}`,
+    { parse_mode: 'Markdown', ...backBtn }
+  );
 }
 
 async function onPassList(query) {
@@ -1185,21 +1226,27 @@ async function onPassSearchStart(query) {
   const chatId = query.message.chat.id;
   clearPassMgmt(chatId);
   setStep(chatId, STEPS.AWAIT_PASS_SEARCH);
-  return bot.sendMessage(chatId, '🔍 მგზავრის ID (რიცხვი) ან ტელეფონი (ან /cancel):',
+  return bot.sendMessage(chatId, '🔍 სახელი ან ტელეფონის ნაწილი (ან /cancel):',
     { reply_markup: { remove_keyboard: true } });
 }
 
 async function onPassengerSearch(chatId, text) {
-  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ჩაწერეთ ID ან ტელეფონი:');
-  const trimmed = text.trim();
-  const asInt   = /^\d+$/.test(trimmed) ? parseInt(trimmed, 10) : null;
-  const p       = asInt
-    ? ((await findPassengerById(asInt)) || (await findPassengerByPhone(trimmed)))
-    : await findPassengerByPhone(trimmed);
-
+  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ჩაწერეთ სახელი ან ტელეფონი:');
   clearPassMgmt(chatId);
-  if (!p) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu() });
-  return showPassengerProfile(chatId, p.id);
+
+  const results = await searchPassengers(text.trim());
+  if (!results.length) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  if (results.length === 1) return showPassengerProfile(chatId, results[0].id);
+
+  const rows = results.map(p => {
+    const active = p.is_active !== false ? '✅' : '🔴';
+    const name   = p.full_name || p.phone || '?';
+    return [{ text: `${active} ${name} | ${p.phone || '—'}`, callback_data: `adm_pass:${p.id}` }];
+  });
+  return bot.sendMessage(chatId, `🔍 *${results.length} შედეგი:*`, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
 }
 
 async function onPassProfile(query) {
@@ -1246,6 +1293,16 @@ async function onPassToggle(query) {
 
 const DRV_PAGE_SIZE = 8;
 
+async function showDriverMenu(chatId) {
+  return bot.sendMessage(chatId, '🚚 *მძღოლები:*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [
+      [{ text: '📋 ყველა მძღოლი', callback_data: 'adm_drv_list:0' }],
+      [{ text: '🔍 ძებნა',         callback_data: 'adm_drv_search' }],
+    ]},
+  });
+}
+
 async function showDriverList(chatId, page = 0) {
   const [drivers, total] = await Promise.all([
     getAllDrivers({ limit: DRV_PAGE_SIZE, offset: page * DRV_PAGE_SIZE }),
@@ -1262,11 +1319,9 @@ async function showDriverList(chatId, page = 0) {
 
   const totalPages = Math.ceil(total / DRV_PAGE_SIZE);
   const navRow     = [];
-  if (page > 0)               navRow.push({ text: '← წინა',     callback_data: `adm_drv_list:${page - 1}` });
+  if (page > 0)              navRow.push({ text: '← წინა',    callback_data: `adm_drv_list:${page - 1}` });
   navRow.push({ text: `${page + 1}/${totalPages}`, callback_data: 'noop' });
-  if (page + 1 < totalPages)  navRow.push({ text: 'შემდეგი →', callback_data: `adm_drv_list:${page + 1}` });
-
-  rows.push([{ text: '🔍 ძებნა (ID ან ტელეფონი)', callback_data: 'adm_drv_search' }]);
+  if (page + 1 < totalPages) navRow.push({ text: 'შემდეგი →', callback_data: `adm_drv_list:${page + 1}` });
   if (navRow.length > 1) rows.push(navRow);
 
   return bot.sendMessage(chatId, `🚚 *მძღოლები* (სულ: ${total}):`, {
@@ -1276,21 +1331,29 @@ async function showDriverList(chatId, page = 0) {
 }
 
 async function showDriverProfile(chatId, driverId) {
-  const d = await findDriverById(driverId);
+  const [d, stats] = await Promise.all([
+    findDriverById(driverId),
+    getDriverStats(driverId),
+  ]);
   if (!d) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.');
 
   const statusLabel = d.is_active    ? '✅ აქტიური'       : '🔴 დაბლოკილი';
   const availLabel  = d.is_available ? '🟢 ხელმისაწვდომი' : '⚫ მიუწვდომელი';
   const typeLabel   = d.truck_type === 'crane' ? '🏗 ამწე' : '🚗 ჩვეულებრივი';
   const balTxt      = parseFloat(d.balance) < 0 ? `⚠️ ${d.balance} ₾` : `${d.balance} ₾`;
+  const bonusTxt    = parseFloat(d.bonus_balance) > 0 ? `  🎁 ${d.bonus_balance} ₾` : '';
+  const ratingTxt   = stats?.avg_rating
+    ? `⭐ ${parseFloat(stats.avg_rating).toFixed(1)} avg (${parseInt(stats.rated_count)} შეფ.)`
+    : '⭐ შეუფასებელი';
 
   const text = [
     `👤 *${d.full_name}*`,
     `📱 Telegram ID: \`${d.telegram_id}\``,
     `📞 ტელეფონი: ${d.phone}`,
-    `🚛 ტიპი: ${typeLabel}`,
-    `🚘 ${d.car_model || '—'} | ნომ: ${d.car_plate || '—'}`,
-    `💰 ბალანსი: ${balTxt}`,
+    `🚛 ${typeLabel} | 🚘 ${d.car_model || '—'} | ნომ: ${d.car_plate || '—'}`,
+    `💰 ბალანსი: ${balTxt}${bonusTxt}`,
+    ratingTxt,
+    `🏦 IBAN: ${d.bank_account || '—'}`,
     `${statusLabel} | ${availLabel}`,
   ].join('\n');
 
@@ -1301,15 +1364,20 @@ async function showDriverProfile(chatId, driverId) {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '✏️ სახელი',    callback_data: `adm_drv_edit:${d.id}:full_name` },
-          { text: '✏️ ტელეფონი', callback_data: `adm_drv_edit:${d.id}:phone`     },
+          { text: '✏️ სახელი',    callback_data: `adm_drv_edit:${d.id}:full_name`    },
+          { text: '📱 ტელეფონი', callback_data: `adm_drv_edit:${d.id}:phone`         },
         ],
         [
-          { text: '✏️ მოდელი', callback_data: `adm_drv_edit:${d.id}:car_model` },
-          { text: '✏️ ნომერი', callback_data: `adm_drv_edit:${d.id}:car_plate` },
+          { text: '🚘 მოდელი', callback_data: `adm_drv_edit:${d.id}:car_model`   },
+          { text: '🔢 ნომერი', callback_data: `adm_drv_edit:${d.id}:car_plate`   },
         ],
-        [{ text: toggleLabel,  callback_data: `adm_drv_toggle:${d.id}` }],
-        [{ text: '← სია',      callback_data: 'adm_drv_back'           }],
+        [{ text: '🏦 ანგარიში (IBAN)', callback_data: `adm_drv_edit:${d.id}:bank_account` }],
+        [
+          { text: '➖ ფულის გატანა',  callback_data: `adm_wd_drv:${d.id}`       },
+          { text: '📜 გატანის ისტ.',   callback_data: `adm_wdhist_drv:${d.id}`  },
+        ],
+        [{ text: toggleLabel,           callback_data: `adm_drv_toggle:${d.id}` }],
+        [{ text: '← უკან',              callback_data: 'adm_drv_back'           }],
       ],
     },
   });
@@ -1326,21 +1394,27 @@ async function onDrvSearchStart(query) {
   const chatId = query.message.chat.id;
   clearDrvMgmt(chatId);
   setStep(chatId, STEPS.AWAIT_DRV_SEARCH);
-  return bot.sendMessage(chatId, '🔍 მძღოლის ID (რიცხვი) ან ტელეფონი (ან /cancel):',
+  return bot.sendMessage(chatId, '🔍 სახელი ან ტელეფონის ნაწილი (ან /cancel):',
     { reply_markup: { remove_keyboard: true } });
 }
 
 async function onDriverSearch(chatId, text) {
-  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ჩაწერეთ ID ან ტელეფონი:');
-  const trimmed = text.trim();
-  const asInt   = /^\d+$/.test(trimmed) ? parseInt(trimmed, 10) : null;
-  const driver  = asInt
-    ? ((await findDriverById(asInt)) || (await findDriverByPhone(trimmed)))
-    : await findDriverByPhone(trimmed);
-
+  if (!text?.trim()) return bot.sendMessage(chatId, '⚠️ ჩაწერეთ სახელი ან ტელეფონი:');
   clearDrvMgmt(chatId);
-  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu() });
-  return showDriverProfile(chatId, driver.id);
+
+  const results = await searchDrivers(text.trim());
+  if (!results.length) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  if (results.length === 1) return showDriverProfile(chatId, results[0].id);
+
+  const rows = results.map(d => {
+    const active = d.is_active ? '✅' : '🔴';
+    const type   = d.truck_type === 'crane' ? '🏗' : '🚗';
+    return [{ text: `${active} ${type} ${d.full_name} | ${d.phone || '—'}`, callback_data: `adm_drv:${d.id}` }];
+  });
+  return bot.sendMessage(chatId, `🔍 *${results.length} შედეგი:*`, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
 }
 
 async function onDrvProfile(query) {
@@ -1349,7 +1423,13 @@ async function onDrvProfile(query) {
   return showDriverProfile(query.message.chat.id, id);
 }
 
-const FIELD_LABELS = { full_name: 'სახელი', phone: 'ტელეფონი', car_model: 'მანქანის მოდელი', car_plate: 'სახ. ნომერი' };
+const FIELD_LABELS = {
+  full_name:    'სახელი',
+  phone:        'ტელეფონი',
+  car_model:    'მანქანის მოდელი',
+  car_plate:    'სახ. ნომერი',
+  bank_account: 'ბანკ. ანგარიში (IBAN)',
+};
 
 async function onDrvEditStart(query) {
   await bot.answerCallbackQuery(query.id);

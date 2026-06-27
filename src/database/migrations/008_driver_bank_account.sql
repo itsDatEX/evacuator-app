@@ -1,0 +1,2 @@
+ALTER TABLE drivers
+  ADD COLUMN IF NOT EXISTS bank_account VARCHAR(34);
