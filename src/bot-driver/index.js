@@ -6,16 +6,18 @@ const logger      = require('../shared/logger');
 const {
   STEPS, getSession, setStep,
   updateReg, updateRoute, clearReg, clearRouteSession,
+  clearSelfEdit, clearSelfWd,
 } = require('./sessions');
 const {
   findByTelegramId, createDriver,
   setAvailability, setRoute, clearRoute,
-  updateDriverLocation,
+  updateDriverLocation, updateDriverField,
 } = require('../shared/driverService');
 const {
   acceptOrder, arriveOrder, startOrder, completeOrder, settleOrder,
   getDriverHistory, getDriverStats, getEligibleDrivers,
   ratePassenger, getOrderById,
+  getDriverWithdrawalsToday, recordSelfWithdrawal,
 } = require('../shared/orderService');
 const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
@@ -24,6 +26,16 @@ const bot = new TelegramBot(config.telegram.driverToken, { polling: true });
 
 const ARRIVED_THRESHOLD_KM  = 1;
 const COMPLETE_THRESHOLD_KM = 3;
+
+const DAILY_WD_LIMIT = 500;
+function calcCommission(amount) { return amount < 300 ? 1 : 2; }
+
+const SELF_EDIT_LABELS = {
+  phone:        '📱 ტელეფონის ნომერი',
+  car_model:    '🚘 მანქანის მოდელი',
+  car_plate:    '🔢 სანომრე ნიშანი',
+  bank_account: '🏦 საბანკო ანგარიში (IBAN)',
+};
 
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R    = 6371;
@@ -43,7 +55,8 @@ function mainMenuKeyboard() {
       [{ text: '✅ ხელმისაწვდომი ვარ' }, { text: '❌ მიუწვდომელი ვარ' }],
       [{ text: '🛣️ მარშრუტზე ვარ' },    { text: '🗑️ მარშრუტი გავასუფთავე' }],
       [{ text: '📋 ჩემი შეკვეთები' },    { text: '⭐ სტატისტიკა' }],
-      [{ text: '💰 ჩემი ბალანსი' }],
+      [{ text: '💰 ჩემი ბალანსი' },      { text: '💸 ფულის გატანა' }],
+      [{ text: '✏️ ჩემი მონაცემები' }],
     ],
     resize_keyboard: true,
   };
@@ -157,6 +170,10 @@ bot.on('message', async (msg) => {
         break;
 
       case STEPS.IDLE: await onMenuAction(msg); break;
+
+      case STEPS.AWAIT_SELF_EDIT_FIELD: await onSelfEditValue(msg);  break;
+      case STEPS.AWAIT_SELF_WD_BANK:    await onSelfWdBank(msg);    break;
+      case STEPS.AWAIT_SELF_WD_AMOUNT:  await onSelfWdAmount(msg);  break;
 
       default: break; // AWAIT_TRUCK_TYPE, AWAIT_ROUTE_FROM_CONFIRM, AWAIT_ROUTE_TO_CONFIRM, AWAIT_ROUTE_DEPARTURE: callback-only
     }
@@ -288,6 +305,12 @@ async function onMenuAction(msg) {
 
     case '💰 ჩემი ბალანსი':
       return showBalance(chatId, driver);
+
+    case '✏️ ჩემი მონაცემები':
+      return showSelfEditMenu(chatId, driver);
+
+    case '💸 ფულის გატანა':
+      return onSelfWdStart(chatId, driver);
   }
 }
 
@@ -510,6 +533,12 @@ bot.on('callback_query', async (query) => {
       await onComplete(query);
     } else if (data.startsWith('rate:')) {
       await onRatePassenger(query);
+    } else if (data.startsWith('self_edit:')) {
+      await onSelfEditField(query);
+    } else if (data === 'self_wd_confirm') {
+      await onSelfWdConfirm(query);
+    } else if (data === 'self_wd_cancel') {
+      await onSelfWdCancel(query);
     } else {
       await bot.answerCallbackQuery(query.id);
     }
@@ -893,6 +922,252 @@ async function showStats(chatId, driverId) {
     `⭐ საშუალო რეიტინგი: ${avg} (${stats.rated_count} შეფასება)`,
     { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() }
   );
+}
+
+// ── Self-service profile edit ──────────────────────────────────────────────────
+
+function showSelfEditMenu(chatId, driver) {
+  const iban = driver.bank_account ? `\n🏦 IBAN: \`${driver.bank_account}\`` : '';
+  return bot.sendMessage(
+    chatId,
+    `✏️ *ჩემი მონაცემები*\n\n` +
+    `👤 ${driver.full_name}\n` +
+    `📱 ${driver.phone || '—'}\n` +
+    `🚘 ${driver.car_model || '—'}  |  🔢 ${driver.car_plate || '—'}` +
+    iban +
+    `\n\nაირჩიეთ ველი რედაქტირებისთვის:`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '📱 ტელეფონი',  callback_data: 'self_edit:phone' },
+            { text: '🚘 მოდელი',    callback_data: 'self_edit:car_model' },
+          ],
+          [
+            { text: '🔢 ნომერი',    callback_data: 'self_edit:car_plate' },
+            { text: '🏦 ანგარიში',  callback_data: 'self_edit:bank_account' },
+          ],
+        ],
+      },
+    }
+  );
+}
+
+async function onSelfEditField(query) {
+  const chatId = query.message.chat.id;
+  const field  = query.data.split(':')[1];
+  const label  = SELF_EDIT_LABELS[field];
+  if (!label) return bot.answerCallbackQuery(query.id);
+
+  await bot.answerCallbackQuery(query.id);
+  getSession(chatId).selfEdit = { field };
+  setStep(chatId, STEPS.AWAIT_SELF_EDIT_FIELD);
+
+  return bot.sendMessage(chatId, `✏️ შეიყვანეთ ახალი *${label}*:`, {
+    parse_mode: 'Markdown',
+    reply_markup: { remove_keyboard: true },
+  });
+}
+
+async function onSelfEditValue(msg) {
+  const chatId = msg.chat.id;
+  const value  = msg.text?.trim();
+  if (!value || value.length < 2) {
+    return bot.sendMessage(chatId, '⚠️ მინიმუმ 2 სიმბოლო.');
+  }
+
+  const { selfEdit } = getSession(chatId);
+  const driver = await findByTelegramId(msg.from.id);
+  if (!driver) {
+    clearSelfEdit(chatId);
+    return bot.sendMessage(chatId, '❌ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenuKeyboard() });
+  }
+
+  await updateDriverField(driver.id, selfEdit.field, value);
+  clearSelfEdit(chatId);
+
+  const updated = await findByTelegramId(msg.from.id);
+  await bot.sendMessage(chatId, `✅ *${SELF_EDIT_LABELS[selfEdit.field]}* განახლდა!`, {
+    parse_mode: 'Markdown',
+    reply_markup: mainMenuKeyboard(),
+  });
+  return showSelfEditMenu(chatId, updated);
+}
+
+// ── Self-service withdrawal ────────────────────────────────────────────────────
+
+async function onSelfWdStart(chatId, driver) {
+  if (!driver.bank_account) {
+    setStep(chatId, STEPS.AWAIT_SELF_WD_BANK);
+    return bot.sendMessage(
+      chatId,
+      '🏦 გატანისთვის ჯერ მიუთითეთ საბანკო ანგარიშის ნომერი (IBAN):',
+      { reply_markup: { remove_keyboard: true } }
+    );
+  }
+  return showSelfWdAmountPrompt(chatId, driver);
+}
+
+async function onSelfWdBank(msg) {
+  const chatId = msg.chat.id;
+  const iban   = msg.text?.trim();
+  if (!iban || iban.length < 5) {
+    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ სწორი IBAN ნომერი.');
+  }
+
+  const driver = await findByTelegramId(msg.from.id);
+  if (!driver) {
+    clearSelfWd(chatId);
+    return bot.sendMessage(chatId, '❌ შეცდომა. სცადეთ /start.', { reply_markup: mainMenuKeyboard() });
+  }
+
+  await updateDriverField(driver.id, 'bank_account', iban);
+  const updated = await findByTelegramId(msg.from.id);
+  return showSelfWdAmountPrompt(chatId, updated);
+}
+
+async function showSelfWdAmountPrompt(chatId, driver) {
+  const balance   = parseFloat(driver.balance) || 0;
+  const todayUsed = await getDriverWithdrawalsToday(driver.id);
+  const remaining = Math.max(0, DAILY_WD_LIMIT - todayUsed);
+
+  setStep(chatId, STEPS.AWAIT_SELF_WD_AMOUNT);
+  return bot.sendMessage(
+    chatId,
+    `💸 *ფულის გატანა*\n\n` +
+    `💰 ბალანსი: *${balance.toFixed(2)} ₾*\n` +
+    `🏦 ანგარიში: \`${driver.bank_account}\`\n\n` +
+    `📅 დღიური ლიმიტი: ${DAILY_WD_LIMIT} ₾\n` +
+    `✅ დღეს გამოყენებული: ${todayUsed.toFixed(2)} ₾\n` +
+    `🔢 დარჩენილი: *${remaining.toFixed(2)} ₾*\n\n` +
+    `საკომისიო: < 300₾ → 1₾  |  300–500₾ → 2₾\n\n` +
+    `შეიყვანეთ გასატანი თანხა:`,
+    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+  );
+}
+
+async function onSelfWdAmount(msg) {
+  const chatId = msg.chat.id;
+  const amount = parseFloat(msg.text?.trim());
+
+  if (!amount || amount <= 0 || isNaN(amount)) {
+    return bot.sendMessage(chatId, '⚠️ შეიყვანეთ სწორი თანხა (მაგ: 150).');
+  }
+
+  const driver = await findByTelegramId(msg.from.id);
+  if (!driver) {
+    clearSelfWd(chatId);
+    return bot.sendMessage(chatId, '❌ შეცდომა. სცადეთ /start.', { reply_markup: mainMenuKeyboard() });
+  }
+
+  const commission = calcCommission(amount);
+  const total      = amount + commission;
+  const balance    = parseFloat(driver.balance) || 0;
+
+  if (total > balance) {
+    return bot.sendMessage(
+      chatId,
+      `❌ *არასაკმარისი ბალანსი*\n\n` +
+      `შენ ანგარიშზე მხოლოდ *${balance.toFixed(2)} ₾* მოგაქვს.\n` +
+      `ვერ გაიტან *${amount.toFixed(2)} ₾*-ს (+საკომისიო ${commission} ₾ = ჯამი ${total.toFixed(2)} ₾).\n\n` +
+      `შეიყვანეთ სხვა თანხა:`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const todayUsed = await getDriverWithdrawalsToday(driver.id);
+  if (todayUsed + amount > DAILY_WD_LIMIT) {
+    const remaining = Math.max(0, DAILY_WD_LIMIT - todayUsed);
+    return bot.sendMessage(
+      chatId,
+      `❌ *დღიური ლიმიტი*\n\n` +
+      `დღეს უკვე გამოყენებულია *${todayUsed.toFixed(2)} ₾*.\n` +
+      `დღეს შეგიძლიათ გაიტანოთ მაქსიმუმ *${remaining.toFixed(2)} ₾*.\n\n` +
+      `შეიყვანეთ სხვა თანხა:`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  getSession(chatId).selfWd = { amount, commission };
+
+  return bot.sendMessage(
+    chatId,
+    `💸 *გატანის დადასტურება*\n\n` +
+    `🏦 ანგარიში: \`${driver.bank_account}\`\n` +
+    `💵 თანხა: *${amount.toFixed(2)} ₾*\n` +
+    `💳 საკომისიო: *${commission} ₾*\n` +
+    `📤 ბალანსიდან ჩამოიჭრება: *${total.toFixed(2)} ₾*`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ დადასტურება', callback_data: 'self_wd_confirm' },
+          { text: '❌ გაუქმება',    callback_data: 'self_wd_cancel'  },
+        ]],
+      },
+    }
+  );
+}
+
+async function onSelfWdConfirm(query) {
+  const chatId  = query.message.chat.id;
+  const session = getSession(chatId);
+  const { amount, commission } = session.selfWd;
+
+  if (!amount) {
+    await bot.answerCallbackQuery(query.id, { text: '⚠️ გატანის მონაცემები არ მოიძებნა.' });
+    return;
+  }
+
+  const driver = await findByTelegramId(query.from.id);
+  if (!driver) {
+    await bot.answerCallbackQuery(query.id, { text: '❌ შეცდომა.' });
+    return;
+  }
+
+  const total   = amount + commission;
+  const balance = parseFloat(driver.balance) || 0;
+
+  if (total > balance) {
+    clearSelfWd(chatId);
+    await bot.answerCallbackQuery(query.id, { text: '❌ ბალანსი შეიცვალა. სცადეთ ხელახლა.' });
+    return bot.sendMessage(chatId, '❌ ბალანსი შეიცვალა — გატანა გაუქმდა.', { reply_markup: mainMenuKeyboard() });
+  }
+
+  const todayUsed = await getDriverWithdrawalsToday(driver.id);
+  if (todayUsed + amount > DAILY_WD_LIMIT) {
+    clearSelfWd(chatId);
+    await bot.answerCallbackQuery(query.id, { text: '❌ დღიური ლიმიტი გადაიჭარბა.' });
+    return bot.sendMessage(chatId, '❌ დღიური ლიმიტი — გატანა გაუქმდა.', { reply_markup: mainMenuKeyboard() });
+  }
+
+  await recordSelfWithdrawal(driver.id, amount, commission);
+  clearSelfWd(chatId);
+
+  await bot.answerCallbackQuery(query.id, { text: '✅ გატანა დარეგისტრირდა!' });
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+
+  return bot.sendMessage(
+    chatId,
+    `✅ *გატანა დარეგისტრირდა!*\n\n` +
+    `💵 *${amount.toFixed(2)} ₾* → \`${driver.bank_account}\`\n` +
+    `💳 საკომისიო: ${commission} ₾\n\n` +
+    `ახალი ბალანსი: *${(balance - total).toFixed(2)} ₾*`,
+    { parse_mode: 'Markdown', reply_markup: mainMenuKeyboard() }
+  );
+}
+
+async function onSelfWdCancel(query) {
+  const chatId = query.message.chat.id;
+  clearSelfWd(chatId);
+  await bot.answerCallbackQuery(query.id, { text: '❌ გაუქმდა.' });
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+  return bot.sendMessage(chatId, '❌ გატანა გაუქმდა.', { reply_markup: mainMenuKeyboard() });
 }
 
 // ── Error handling ─────────────────────────────────────────────────────────────

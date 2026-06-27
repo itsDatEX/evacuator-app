@@ -334,6 +334,39 @@ async function getDriverWithdrawalHistory(driverId) {
   return rows;
 }
 
+async function getDriverWithdrawalsToday(driverId) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total_today
+     FROM withdrawals
+     WHERE driver_id = $1
+       AND created_at >= CURRENT_DATE`,
+    [driverId]
+  );
+  return parseFloat(rows[0].total_today);
+}
+
+async function recordSelfWithdrawal(driverId, amount, commission) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO withdrawals (driver_id, amount, method, source)
+       VALUES ($1, $2, 'card', 'driver_self')`,
+      [driverId, amount]
+    );
+    await client.query(
+      'UPDATE drivers SET balance = balance - $1 WHERE id = $2',
+      [amount + commission, driverId]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // Rate the driver after a completed order (called by the passenger).
 async function rateDriver(orderId, passengerId, rating) {
   const { rows } = await pool.query(
@@ -721,4 +754,6 @@ module.exports = {
   getAllWithdrawals,
   getPassengerOrderHistory,
   getDriverWithdrawalHistory,
+  getDriverWithdrawalsToday,
+  recordSelfWithdrawal,
 };

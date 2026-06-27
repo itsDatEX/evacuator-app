@@ -14,6 +14,11 @@ const STEPS = {
   AWAIT_ROUTE_TO_TEXT:      'AWAIT_ROUTE_TO_TEXT',
   AWAIT_ROUTE_TO_CONFIRM:   'AWAIT_ROUTE_TO_CONFIRM',
   AWAIT_ROUTE_DEPARTURE:    'AWAIT_ROUTE_DEPARTURE',
+  // Self-service profile edit
+  AWAIT_SELF_EDIT_FIELD:    'AWAIT_SELF_EDIT_FIELD',
+  // Self-service withdrawal
+  AWAIT_SELF_WD_BANK:       'AWAIT_SELF_WD_BANK',
+  AWAIT_SELF_WD_AMOUNT:     'AWAIT_SELF_WD_AMOUNT',
 };
 
 const sessions = new Map();
@@ -26,6 +31,8 @@ function getSession(chatId) {
       route:         {},
       pending:       null,
       activeOrderId: null,
+      selfEdit:      {},
+      selfWd:        {},
     });
   }
   return sessions.get(chatId);
@@ -42,7 +49,20 @@ function clearRouteSession(chatId) {
   session.pending = null;
 }
 
+function clearSelfEdit(chatId) {
+  const s     = getSession(chatId);
+  s.selfEdit  = {};
+  s.step      = STEPS.IDLE;
+}
+
+function clearSelfWd(chatId) {
+  const s  = getSession(chatId);
+  s.selfWd = {};
+  s.step   = STEPS.IDLE;
+}
+
 module.exports = {
   STEPS, getSession, setStep,
   updateReg, updateRoute, clearReg, clearRouteSession,
+  clearSelfEdit, clearSelfWd,
 };
