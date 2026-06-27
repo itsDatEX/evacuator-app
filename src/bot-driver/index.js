@@ -944,33 +944,33 @@ async function showStats(chatId, driverId) {
 
 // ── Self-service profile edit ──────────────────────────────────────────────────
 
-const CAR_CATEGORY_LABELS = { normal: '🚗 ჩვეულებრივი', jeep: '🚐 ჯიპი', large: '🚌 დიდი ავტ.' };
+const TRUCK_TYPE_LABELS = { regular: '🚗 ჩვეულებრივი ევაკ.', crane: '🏗 ამწე ევაკ.' };
 
 function showSelfEditMenu(chatId, driver) {
-  const iban    = driver.bank_account  ? `\n🏦 IBAN: \`${driver.bank_account}\`` : '';
-  const catLine = driver.car_category  ? `\n🚛 კატ.: ${CAR_CATEGORY_LABELS[driver.car_category] || driver.car_category}` : '';
+  const iban      = driver.bank_account ? `\n🏦 IBAN: \`${driver.bank_account}\`` : '';
+  const truckLine = `\n🚛 ტიპი: ${TRUCK_TYPE_LABELS[driver.truck_type] || driver.truck_type}`;
   return bot.sendMessage(
     chatId,
     `✏️ *ჩემი მონაცემები*\n\n` +
     `👤 ${driver.full_name}\n` +
     `📱 ${driver.phone || '—'}\n` +
     `🚘 ${driver.car_model || '—'}  |  🔢 ${driver.car_plate || '—'}` +
-    iban + catLine +
+    iban + truckLine +
     `\n\nაირჩიეთ ველი რედაქტირებისთვის:`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '📱 ტელეფონი',            callback_data: 'self_edit:phone' },
-            { text: '🚘 მოდელი',              callback_data: 'self_edit:car_model' },
+            { text: '📱 ტელეფონი',          callback_data: 'self_edit:phone' },
+            { text: '🚘 მოდელი',            callback_data: 'self_edit:car_model' },
           ],
           [
-            { text: '🔢 ავტომობილის ნომ.',   callback_data: 'self_edit:car_plate' },
-            { text: '🏦 საბანკო ანგ.',        callback_data: 'self_edit:bank_account' },
+            { text: '🔢 ავტომობილის ნომ.', callback_data: 'self_edit:car_plate' },
+            { text: '🏦 საბანკო ანგ.',      callback_data: 'self_edit:bank_account' },
           ],
           [
-            { text: '🚛 მანქანის კატეგ.',     callback_data: 'self_edit:car_category' },
+            { text: '🚛 ევაკ. ტიპი',       callback_data: 'self_edit:truck_type' },
           ],
         ],
       },
@@ -984,14 +984,13 @@ async function onSelfEditField(query) {
 
   await bot.answerCallbackQuery(query.id);
 
-  if (field === 'car_category') {
-    return bot.sendMessage(chatId, '🚛 *მანქანის კატეგ. — აირჩიეთ:*', {
+  if (field === 'truck_type') {
+    return bot.sendMessage(chatId, '🚛 *ევაკუატორის ტიპი — აირჩიეთ:*', {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [[
-          { text: '🚗 ჩვეულებრივი', callback_data: 'self_cat:normal' },
-          { text: '🚐 ჯიპი',        callback_data: 'self_cat:jeep'   },
-          { text: '🚌 დიდი ავტ.',   callback_data: 'self_cat:large'  },
+          { text: '🚗 ჩვეულებრივი ევაკ.', callback_data: 'self_cat:regular' },
+          { text: '🏗 ამწე ევაკ.',         callback_data: 'self_cat:crane'   },
         ]],
       },
     });
@@ -1010,17 +1009,17 @@ async function onSelfEditField(query) {
 }
 
 async function onSelfCatSelect(query) {
-  const chatId   = query.message.chat.id;
-  const category = query.data.split(':')[1];
-  if (!['normal', 'jeep', 'large'].includes(category)) {
+  const chatId    = query.message.chat.id;
+  const truckType = query.data.split(':')[1];
+  if (!['regular', 'crane'].includes(truckType)) {
     return bot.answerCallbackQuery(query.id);
   }
 
   const driver = await findByTelegramId(query.from.id);
   if (!driver) return bot.answerCallbackQuery(query.id, { text: '❌ შეცდომა.' });
 
-  await updateDriverField(driver.id, 'car_category', category);
-  await bot.answerCallbackQuery(query.id, { text: `✅ ${CAR_CATEGORY_LABELS[category]}` });
+  await updateDriverField(driver.id, 'truck_type', truckType);
+  await bot.answerCallbackQuery(query.id, { text: `✅ ${TRUCK_TYPE_LABELS[truckType]}` });
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
     chat_id: chatId, message_id: query.message.message_id,
   }).catch(() => {});

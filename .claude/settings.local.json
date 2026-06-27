@@ -3,7 +3,26 @@
     "allow": [
       "PowerShell(git init *)",
       "PowerShell(git add *)",
-      "PowerShell(git *)"
+      "PowerShell(git *)",
+      "Bash(node -e \"require\\('./src/bot-passenger/sessions.js'\\); console.log\\('passenger sessions OK'\\)\")",
+      "Bash(node -e \"require\\('./src/bot-driver/sessions.js'\\); console.log\\('driver sessions OK'\\)\")",
+      "Bash(node -e \"require\\('./src/shared/geocoder.js'\\); console.log\\('geocoder OK'\\)\")",
+      "Bash(node --check src/bot-passenger/index.js)",
+      "Bash(node --check src/bot-driver/index.js)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git config *)",
+      "Bash(git push *)",
+      "Bash(node --check src/shared/sheets.js)",
+      "Bash(node --check src/shared/geo.js)",
+      "Bash(git remote *)",
+      "Bash(node --check src/shared/notifier.js)",
+      "Bash(node --check src/shared/orderService.js)",
+      "Bash(npm install *)",
+      "Bash(node -e \"require\\('xlsx'\\); console.log\\('ok'\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node *)",
+      "PowerShell(node --check \"C:\\\\Projects\\\\evacuator-app\\\\src\\\\bot-driver\\\\index.js\" 2>&1; node --check \"C:\\\\Projects\\\\evacuator-app\\\\src\\\\shared\\\\driverService.js\" 2>&1; node --check \"C:\\\\Projects\\\\evacuator-app\\\\src\\\\shared\\\\orderService.js\" 2>&1; node --check \"C:\\\\Projects\\\\evacuator-app\\\\src\\\\shared\\\\sheets.js\" 2>&1; node --check \"C:\\\\Projects\\\\evacuator-app\\\\src\\\\bot-admin\\\\index.js\" 2>&1; node --check \"C:\\\\Projects\\\\evacuator-app\\\\src\\\\bot-passenger\\\\index.js\" 2>&1)"
     ]
   }
 }

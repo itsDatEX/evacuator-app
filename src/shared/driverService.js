@@ -86,7 +86,7 @@ async function findDriverByPhone(phone) {
   return rows[0] || null;
 }
 
-const EDITABLE_FIELDS = { full_name: true, phone: true, car_model: true, car_plate: true, bank_account: true, car_category: true };
+const EDITABLE_FIELDS = { full_name: true, phone: true, car_model: true, car_plate: true, bank_account: true, truck_type: true };
 
 async function updateDriverField(driverId, field, value) {
   if (!EDITABLE_FIELDS[field]) throw new Error(`Field "${field}" is not editable`);
