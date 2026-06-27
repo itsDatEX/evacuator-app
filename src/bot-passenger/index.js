@@ -12,7 +12,8 @@ const { haversineKm, coordsLabel, getRoadDistanceKm } = require('../shared/geo')
 const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
 
-const bot = new TelegramBot(config.telegram.passengerToken, { polling: true });
+const bot        = new TelegramBot(config.telegram.passengerToken, { polling: true });
+const MINIAPP_URL = config.miniAppUrl;
 
 // ── Keyboard helpers ──────────────────────────────────────────────────────────
 
@@ -27,17 +28,17 @@ function mainMenuKeyboard() {
 }
 
 function locationMethodKeyboard() {
-  return {
-    keyboard: [
-      [{ text: '🗺 ლოკაციის არჩევა', request_location: true }],
-      [{ text: '✏️ მისამართის ჩაწერა' }],
-    ],
-    resize_keyboard: true,
-    one_time_keyboard: true,
-  };
+  const rows = [];
+  if (MINIAPP_URL) {
+    rows.push([{ text: '🗺 რუკაზე მონიშვნა', web_app: { url: MINIAPP_URL } }]);
+  }
+  rows.push([{ text: '✏️ მისამართის ჩაწერა' }]);
+  return { keyboard: rows, resize_keyboard: true, one_time_keyboard: true };
 }
 
-const MAP_HINT = '🗺 დააჭირეთ ღილაკს და აირჩიეთ "Choose on Map"\nან ✏️ ჩაწერეთ მისამართი ღილაკით:';
+const MAP_HINT = MINIAPP_URL
+  ? '🗺 დააჭირეთ ღილაკს რუკაზე მოსანიშნად\nან ✏️ ჩაწერეთ მისამართი:'
+  : '✏️ ჩაწერეთ მისამართი ღილაკით:';
 
 // ── /start ────────────────────────────────────────────────────────────────────
 
@@ -96,7 +97,8 @@ bot.on('message', async (msg) => {
         break;
 
       case STEPS.AWAIT_PICKUP_LOC_METHOD:
-        if (msg.location) await onPickupLoc(msg);
+        if (msg.web_app_data) await onPickupWebApp(msg);
+        else if (msg.location) await onPickupLoc(msg);
         else if (msg.text === '✏️ მისამართის ჩაწერა') await onPickupMethodText(msg);
         else bot.sendMessage(chatId, '📍 გამოიყენეთ ქვემოთ მოცემული ღილაკი.');
         break;
@@ -106,7 +108,8 @@ bot.on('message', async (msg) => {
         break;
 
       case STEPS.AWAIT_DEST_LOC_METHOD:
-        if (msg.location) await onDestLoc(msg);
+        if (msg.web_app_data) await onDestWebApp(msg);
+        else if (msg.location) await onDestLoc(msg);
         else if (msg.text === '✏️ მისამართის ჩაწერა') await onDestMethodText(msg);
         else bot.sendMessage(chatId, '📍 გამოიყენეთ ქვემოთ მოცემული ღილაკი.');
         break;
@@ -196,6 +199,33 @@ async function onStartOrder(msg) {
   });
 }
 
+// ── Pickup — Mini App (map pin) branch ───────────────────────────────────────
+
+async function onPickupWebApp(msg) {
+  const chatId = msg.chat.id;
+  let parsed;
+  try { parsed = JSON.parse(msg.web_app_data.data); } catch { return; }
+  const { lat, lng } = parsed;
+
+  await bot.sendMessage(chatId, '⏳ ვამოწმებ ადგილს...');
+  const city = await reverseGeocode(lat, lng);
+  const locationLabel = city
+    ? `${coordsLabel(lat, lng)} (${city})`
+    : coordsLabel(lat, lng);
+
+  getSession(chatId).pending = { lat, lng, displayName: locationLabel, city: city || null };
+  await bot.sendLocation(chatId, lat, lng);
+  setStep(chatId, STEPS.AWAIT_PICKUP_CONFIRM);
+  return bot.sendMessage(chatId, `📍 ${locationLabel}\n\nეს სწორი ადგილია (საიდან)?`, {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '✅ სწორია',            callback_data: 'geo_confirm:ok'    },
+        { text: '🔄 ხელახლა მონიშვნა', callback_data: 'geo_confirm:retry' },
+      ]],
+    },
+  });
+}
+
 // ── Pickup — GPS branch ───────────────────────────────────────────────────────
 
 async function onPickupLoc(msg) {
@@ -263,6 +293,41 @@ async function onPickupText(msg) {
         inline_keyboard: [[
           { text: '✅ სწორია',          callback_data: 'geo_confirm:ok'    },
           { text: '🔄 ხელახლა ჩაწერა', callback_data: 'geo_confirm:retry' },
+        ]],
+      },
+    }
+  );
+}
+
+// ── Destination — Mini App (map pin) branch ───────────────────────────────────
+
+async function onDestWebApp(msg) {
+  const chatId = msg.chat.id;
+  let parsed;
+  try { parsed = JSON.parse(msg.web_app_data.data); } catch { return; }
+  const { lat, lng } = parsed;
+  const { order } = getSession(chatId);
+
+  await bot.sendMessage(chatId, '⏳ ვამოწმებ ადგილს...');
+  const [city, distanceKm] = await Promise.all([
+    reverseGeocode(lat, lng),
+    getRoadDistanceKm(order.pickupLat, order.pickupLng, lat, lng)
+      .then(d => Math.round(d * 10) / 10),
+  ]);
+  const locationLabel = city
+    ? `${coordsLabel(lat, lng)} (${city})`
+    : coordsLabel(lat, lng);
+
+  getSession(chatId).pending = { lat, lng, displayName: locationLabel, city: city || null, distanceKm };
+  await bot.sendLocation(chatId, lat, lng);
+  setStep(chatId, STEPS.AWAIT_DEST_CONFIRM);
+  return bot.sendMessage(chatId,
+    `📍 ${locationLabel}\n📏 ~${distanceKm} კმ\n\nეს სწორი ადგილია (სად)?`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ სწორია',            callback_data: 'geo_confirm:ok'    },
+          { text: '🔄 ხელახლა მონიშვნა', callback_data: 'geo_confirm:retry' },
         ]],
       },
     }

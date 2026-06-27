@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>ადგილის არჩევა</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+    body { display: flex; flex-direction: column; background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #000); }
+    #map { flex: 1; min-height: 0; }
+    #footer { padding: 10px 14px 14px; border-top: 1px solid rgba(0,0,0,0.08); }
+    #address-text { font-size: 13px; color: var(--tg-theme-hint-color, #888); margin-bottom: 6px; min-height: 18px; }
+    #hint { font-size: 12px; color: var(--tg-theme-hint-color, #aaa); text-align: center; margin-bottom: 10px; }
+    #confirm-btn {
+      width: 100%; padding: 13px;
+      background: var(--tg-theme-button-color, #2481cc);
+      color: var(--tg-theme-button-text-color, #fff);
+      border: none; border-radius: 10px;
+      font-size: 16px; font-weight: 600; cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    #confirm-btn:disabled { opacity: 0.35; cursor: default; }
+    #confirm-btn:not(:disabled):active { opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="footer">
+    <div id="address-text">📍 რუკაზე დააჭირეთ ადგილს...</div>
+    <div id="hint">pin-ი გადაიტანეთ ზუსტი მდებარეობისთვის</div>
+    <button id="confirm-btn" disabled>✅ ეს ადგილი</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+    tg.ready();
+
+    const map = L.map('map').setView([41.6938, 44.8015], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap', maxZoom: 19,
+    }).addTo(map);
+
+    const addressEl = document.getElementById('address-text');
+    const hintEl    = document.getElementById('hint');
+    const btn       = document.getElementById('confirm-btn');
+    let marker = null, selLat = null, selLng = null;
+
+    function place(lat, lng) {
+      selLat = lat; selLng = lng;
+      if (!marker) {
+        marker = L.marker([lat, lng], { draggable: true }).addTo(map);
+        marker.on('drag', e => {
+          const p = e.target.getLatLng();
+          selLat = p.lat; selLng = p.lng;
+          addressEl.textContent = `📍 ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`;
+        });
+        marker.on('dragend', e => {
+          const p = e.target.getLatLng();
+          selLat = p.lat; selLng = p.lng;
+        });
+      } else {
+        marker.setLatLng([lat, lng]);
+      }
+      addressEl.textContent = `📍 ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      hintEl.textContent    = 'pin-ი გადაიტანეთ ზუსტი მდებარეობისთვის';
+      btn.disabled = false;
+    }
+
+    map.on('click', e => place(e.latlng.lat, e.latlng.lng));
+
+    btn.addEventListener('click', () => {
+      if (selLat === null) return;
+      tg.sendData(JSON.stringify({ lat: selLat, lng: selLng }));
+    });
+
+    // Center map on user's current position (just centering, not auto-selecting)
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        pos => map.setView([pos.coords.latitude, pos.coords.longitude], 15),
+        () => {}
+      );
+    }
+  </script>
+</body>
+</html>
