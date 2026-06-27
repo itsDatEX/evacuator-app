@@ -32,16 +32,18 @@ async function notifyDriversOfNewOrder(order, drivers, draft) {
     return;
   }
 
-  const sizeLabel = draft.vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
-  const rollLabel = draft.canRoll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
-  const sourceTag = order.source === 'phone' ? '📞 ტელეფონით' : '📱 ბოტიდან';
-  const phoneInfo = order.source === 'phone' && order.caller_phone
+  const sizeLabel     = draft.vehicleSize === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
+  const rollLabel     = draft.canRoll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
+  const sourceTag     = order.source === 'phone' ? '📞 ტელეფონით' : '📱 ბოტიდან';
+  const phoneInfo     = order.source === 'phone' && order.caller_phone
     ? `\n📱 მგზავრის ნომერი: ${order.caller_phone}` : '';
+  const pickupDetails = draft.pickupDetails ? `\n   📝 ${draft.pickupDetails}` : '';
+  const destDetails   = draft.destDetails   ? `\n   📝 ${draft.destDetails}`   : '';
 
   const text =
     `🔔 *ახალი შეკვეთა #${order.id}* (${sourceTag})\n\n` +
-    `📍 საიდან: ${draft.pickupAddress}\n` +
-    `🏁 სად: ${draft.destAddress}\n` +
+    `📍 საიდან: ${draft.pickupAddress}${pickupDetails}\n` +
+    `🏁 სად: ${draft.destAddress}${destDetails}\n` +
     `📏 მანძილი: ~${draft.distanceKm} კმ\n` +
     `${sizeLabel} | ${rollLabel}${phoneInfo}\n` +
     `💰 ფასი: ${order.price} ₾`;
@@ -175,18 +177,20 @@ async function notifyDriverOfPendingOrders(driver, orders) {
   if (!_driverBot || !orders.length) return;
   for (const order of orders) {
     try {
-      const sizeLabel = order.vehicle_size === 'jeep'
+      const sizeLabel     = order.vehicle_size === 'jeep'
         ? '🚐 ჯიპი'
         : order.vehicle_size === 'large' ? '🚌 დიდი' : '🚗 ჩვეულებრივი';
-      const rollLabel = order.can_roll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
-      const sourceTag = order.source === 'phone' ? '📞 ტელეფონით' : '📱 ბოტიდან';
-      const phoneInfo = order.source === 'phone' && order.caller_phone
+      const rollLabel     = order.can_roll ? '✅ გორავს' : '❌ არ გორავს (ამწე)';
+      const sourceTag     = order.source === 'phone' ? '📞 ტელეფონით' : '📱 ბოტიდან';
+      const phoneInfo     = order.source === 'phone' && order.caller_phone
         ? `\n📱 მგზავრის ნომ.: ${order.caller_phone}` : '';
+      const pickupDetails = order.pickup_details ? `\n   📝 ${order.pickup_details}` : '';
+      const destDetails   = order.dest_details   ? `\n   📝 ${order.dest_details}`   : '';
 
       const text =
         `🔔 *მოლოდინში შეკვეთა #${order.id}* (${sourceTag})\n\n` +
-        `📍 ${order.pickup_address}\n` +
-        `🏁 ${order.destination_address}\n` +
+        `📍 ${order.pickup_address}${pickupDetails}\n` +
+        `🏁 ${order.destination_address}${destDetails}\n` +
         `${sizeLabel} | ${rollLabel}${phoneInfo}\n` +
         `💰 ${order.price} ₾`;
 

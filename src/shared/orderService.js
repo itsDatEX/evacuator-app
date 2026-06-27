@@ -6,8 +6,8 @@ const { getBonusEnabled } = require('./configService');
 // callerPhone: phone number typed by admin for phone orders (null for telegram orders)
 async function createOrder({
   passengerId = null,
-  pickupLat = null, pickupLng = null, pickupAddress,
-  destLat = null,   destLng = null,   destAddress,
+  pickupLat = null, pickupLng = null, pickupAddress, pickupDetails = null,
+  destLat = null,   destLng = null,   destAddress,   destDetails   = null,
   vehicleSize, canRoll, price,
   paymentMethod = 'cash',
   source = 'telegram', callerPhone = null,
@@ -16,17 +16,17 @@ async function createOrder({
   const { rows } = await pool.query(
     `INSERT INTO orders
        (passenger_id,
-        pickup_lat, pickup_lng, pickup_address,
-        dest_lat,   dest_lng,   destination_address,
+        pickup_lat, pickup_lng, pickup_address, pickup_details,
+        dest_lat,   dest_lng,   destination_address, dest_details,
         vehicle_size, can_roll, price, payment_method,
         source, caller_phone,
         pickup_city, dest_city)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      RETURNING *`,
     [
       passengerId,
-      pickupLat, pickupLng, pickupAddress,
-      destLat,   destLng,   destAddress,
+      pickupLat, pickupLng, pickupAddress, pickupDetails,
+      destLat,   destLng,   destAddress,   destDetails,
       vehicleSize, canRoll, price, paymentMethod,
       source, callerPhone,
       pickupCity, destCity,
