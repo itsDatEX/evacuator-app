@@ -10,16 +10,30 @@ const {
 const {
   findByTelegramId, createDriver,
   setAvailability, setRoute, clearRoute,
+  updateDriverLocation,
 } = require('../shared/driverService');
 const {
   acceptOrder, arriveOrder, startOrder, completeOrder, settleOrder,
   getDriverHistory, getDriverStats, getEligibleDrivers,
-  ratePassenger,
+  ratePassenger, getOrderById,
 } = require('../shared/orderService');
 const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
 
 const bot = new TelegramBot(config.telegram.driverToken, { polling: true });
+
+const ARRIVED_THRESHOLD_KM  = 1;
+const COMPLETE_THRESHOLD_KM = 3;
+
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R    = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a    = Math.sin(dLat / 2) ** 2 +
+               Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+               Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 // ── Keyboard / display helpers ─────────────────────────────────────────────────
 
@@ -107,6 +121,15 @@ bot.on('message', async (msg) => {
   const { step } = getSession(chatId);
 
   try {
+    // Silently capture any location share (live or one-time) to keep driver GPS fresh
+    if (msg.location) {
+      const driverForLoc = await findByTelegramId(msg.from.id).catch(() => null);
+      if (driverForLoc) {
+        await updateDriverLocation(driverForLoc.telegram_id, msg.location.latitude, msg.location.longitude)
+          .catch(() => {});
+      }
+    }
+
     switch (step) {
       case STEPS.AWAIT_REG_NAME:  await onRegName(msg);  break;
       case STEPS.AWAIT_REG_PHONE: await onRegPhone(msg); break;
@@ -626,6 +649,22 @@ async function onArrived(query) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
   }
 
+  if (driver.current_lat != null) {
+    const orderForCheck = await getOrderById(orderId);
+    if (orderForCheck?.pickup_lat != null) {
+      const dist = haversineKm(
+        parseFloat(driver.current_lat), parseFloat(driver.current_lng),
+        parseFloat(orderForCheck.pickup_lat), parseFloat(orderForCheck.pickup_lng),
+      );
+      if (dist > ARRIVED_THRESHOLD_KM) {
+        return bot.answerCallbackQuery(query.id, {
+          text: `📍 ჯერ ძალიან შორს ხარ (~${dist.toFixed(1)} კმ) — მოახლოვდი ადგილს, შემდეგ ხელახლა ცადო.`,
+          show_alert: true,
+        });
+      }
+    }
+  }
+
   const order = await arriveOrder(orderId, driver.id);
   if (!order) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ვერ მოხდა სტატუსის განახლება.' });
@@ -703,6 +742,22 @@ async function onComplete(query) {
   const driver = await findByTelegramId(query.from.id);
   if (!driver) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
+  }
+
+  if (driver.current_lat != null) {
+    const orderForCheck = await getOrderById(orderId);
+    if (orderForCheck?.dest_lat != null) {
+      const dist = haversineKm(
+        parseFloat(driver.current_lat), parseFloat(driver.current_lng),
+        parseFloat(orderForCheck.dest_lat), parseFloat(orderForCheck.dest_lng),
+      );
+      if (dist > COMPLETE_THRESHOLD_KM) {
+        return bot.answerCallbackQuery(query.id, {
+          text: `📍 ჯერ ძალიან შორს ხარ დანიშნულების ადგილიდან (~${dist.toFixed(1)} კმ) — მოახლოვდი, შემდეგ ხელახლა ცადო.`,
+          show_alert: true,
+        });
+      }
+    }
   }
 
   const order = await completeOrder(orderId, driver.id);

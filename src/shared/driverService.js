@@ -124,6 +124,13 @@ async function getActiveDriverTelegramIds() {
   return rows.map(r => r.telegram_id);
 }
 
+async function updateDriverLocation(telegramId, lat, lng) {
+  await pool.query(
+    `UPDATE drivers SET current_lat=$1, current_lng=$2, location_updated_at=NOW() WHERE telegram_id=$3`,
+    [lat, lng, telegramId]
+  );
+}
+
 module.exports = {
   findByTelegramId, createDriver,
   setAvailability, setRoute, clearRoute,
@@ -132,4 +139,5 @@ module.exports = {
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive,
   getActiveDriverTelegramIds,
+  updateDriverLocation,
 };
