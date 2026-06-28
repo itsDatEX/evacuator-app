@@ -799,7 +799,6 @@ async function onArrived(query) {
 
   await notifier.notifyPassengerDriverArrived(order.passenger_telegram_id, driver);
 
-  const destNav = navUrl(order.dest_lat, order.dest_lng, order.destination_address);
   return bot.sendMessage(
     chatId,
     `📍 *მოვედი!*\n\n` +
@@ -811,7 +810,6 @@ async function onArrived(query) {
       reply_markup: {
         inline_keyboard: [[
           { text: '🚛 დავიძარი', callback_data: `start:${orderId}` },
-          ...(destNav ? [{ text: '🗺 ნავიგაცია', url: destNav }] : []),
         ]],
       },
     }
@@ -842,6 +840,7 @@ async function onStart(query) {
 
   await notifier.notifyPassengerTripStarted(order.passenger_telegram_id);
 
+  const destNav = navUrl(order.dest_lat, order.dest_lng, order.destination_address);
   return bot.sendMessage(
     chatId,
     '🚛 *მგზავრობა დაიწყო!*\n\nდანიშნულებაზე მისვლის შემდეგ დააჭირეთ:',
@@ -850,6 +849,7 @@ async function onStart(query) {
       reply_markup: {
         inline_keyboard: [[
           { text: '✅ დავასრულე', callback_data: `complete:${orderId}` },
+          ...(destNav ? [{ text: '🗺 ნავიგაცია', url: destNav }] : []),
         ]],
       },
     }
