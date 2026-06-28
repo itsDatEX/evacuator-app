@@ -43,6 +43,11 @@ const notifier = require('../shared/notifier');
 
 const bot = new TelegramBot(config.admin.botToken, { polling: true });
 
+bot.setMyCommands([
+  { command: 'start',  description: 'Admin panel' },
+  { command: 'cancel', description: 'მიმდინარე მოქმედების გაუქმება' },
+]);
+
 // ── Auth guard ────────────────────────────────────────────────────────────────
 
 function isAdmin(from) { return from?.id === config.admin.telegramId; }

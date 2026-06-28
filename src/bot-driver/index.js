@@ -25,6 +25,11 @@ const notifier = require('../shared/notifier');
 
 const bot = new TelegramBot(config.telegram.driverToken, { polling: true });
 
+bot.setMyCommands([
+  { command: 'start',  description: 'დაწყება / მთავარი მენიუ' },
+  { command: 'cancel', description: 'მიმდინარე მოქმედების გაუქმება' },
+]);
+
 const ARRIVED_THRESHOLD_KM  = 1;
 const COMPLETE_THRESHOLD_KM = 3;
 

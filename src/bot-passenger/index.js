@@ -15,6 +15,11 @@ const notifier = require('../shared/notifier');
 const bot        = new TelegramBot(config.telegram.passengerToken, { polling: true });
 const MINIAPP_URL = config.miniAppUrl;
 
+bot.setMyCommands([
+  { command: 'start',  description: 'დაწყება / მთავარი მენიუ' },
+  { command: 'cancel', description: 'მიმდინარე მოქმედების გაუქმება' },
+]);
+
 // ── Keyboard helpers ──────────────────────────────────────────────────────────
 
 function mainMenuKeyboard() {
