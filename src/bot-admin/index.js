@@ -154,10 +154,20 @@ bot.on('message', guard(async (msg) => {
 // ── Callback router ───────────────────────────────────────────────────────────
 
 bot.on('callback_query', async (query) => {
-  if (!isAdmin(query.from)) return bot.answerCallbackQuery(query.id);
   const chatId = query.message.chat.id;
-  const { step } = getSession(chatId);
   const data = query.data;
+
+  // Order status buttons (arrived/start/complete) work without admin check
+  if (data.startsWith('adm_ostatus:')) {
+    try { await onAdminOrderStatus(query); } catch (err) {
+      logger.error('Admin ostatus error', { chatId, data, error: err.message });
+      await bot.answerCallbackQuery(query.id, { text: '❌ შეცდომა.' });
+    }
+    return;
+  }
+
+  if (!isAdmin(query.from)) return bot.answerCallbackQuery(query.id);
+  const { step } = getSession(chatId);
 
   try {
     if      (data.startsWith('adm_vsize:')   && step === STEPS.AWAIT_VSIZE)   await onVsize(query);
