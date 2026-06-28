@@ -226,7 +226,14 @@ async function settleOrder(orderId) {
     const cfg          = await getPricingConfig();
     const bonusEnabled = await getBonusEnabled();
     const price        = parseFloat(order.price);
-    const commission   = Math.round(price * cfg.commissionRate * 100) / 100;
+
+    const { rows: [drv] } = await client.query(
+      'SELECT is_partner FROM drivers WHERE id = $1', [order.driver_id]
+    );
+    const rate       = drv?.is_partner && cfg.partnerCommissionRate != null
+      ? cfg.partnerCommissionRate
+      : cfg.commissionRate;
+    const commission = Math.round(price * rate * 100) / 100;
 
     // card: driver receives net fare; cash: driver owes commission to company
     const balanceDelta = order.payment_method === 'card'

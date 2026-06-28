@@ -36,7 +36,7 @@ const {
   addBonusBalance,
   getAllDrivers, countDrivers, searchDrivers,
   findDriverById, findDriverByPhone,
-  updateDriverField, toggleDriverActive,
+  updateDriverField, toggleDriverActive, toggleDriverPartner,
   getActiveDriverTelegramIds,
   setAvailability,
 } = require('../shared/driverService');
@@ -269,6 +269,7 @@ bot.on('callback_query', async (query) => {
     else if (data === 'adm_drv_search')            await onDrvSearchStart(query);
     else if (data.startsWith('adm_drv:'))          await onDrvProfile(query);
     else if (data.startsWith('adm_drv_edit:'))     await onDrvEditStart(query);
+    else if (data.startsWith('adm_drv_partner:'))  await onDrvPartnerToggle(query);
     else if (data.startsWith('adm_drv_toggle:'))   await onDrvToggle(query);
     else if (data === 'adm_drv_back')              { await bot.answerCallbackQuery(query.id); await showDriverMenu(chatId); }
     // Admin management — owner only
@@ -1560,17 +1561,18 @@ async function showDriverProfile(chatId, driverId) {
   ]);
   if (!d) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.');
 
-  const statusLabel = d.is_active    ? '✅ აქტიური'       : '🔴 დაბლოკილი';
-  const availLabel  = d.is_available ? '🟢 ხელმისაწვდომი' : '⚫ მიუწვდომელი';
-  const typeLabel   = d.truck_type === 'crane' ? '🏗 ამწე' : '🚗 ჩვეულებრივი';
-  const balTxt      = parseFloat(d.balance) < 0 ? `⚠️ ${d.balance} ₾` : `${d.balance} ₾`;
-  const bonusTxt    = parseFloat(d.bonus_balance) > 0 ? `  🎁 ${d.bonus_balance} ₾` : '';
-  const ratingTxt   = stats?.avg_rating
+  const statusLabel  = d.is_active    ? '✅ აქტიური'       : '🔴 დაბლოკილი';
+  const availLabel   = d.is_available ? '🟢 ხელმისაწვდომი' : '⚫ მიუწვდომელი';
+  const typeLabel    = d.truck_type === 'crane' ? '🏗 ამწე' : '🚗 ჩვეულებრივი';
+  const balTxt       = parseFloat(d.balance) < 0 ? `⚠️ ${d.balance} ₾` : `${d.balance} ₾`;
+  const bonusTxt     = parseFloat(d.bonus_balance) > 0 ? `  🎁 ${d.bonus_balance} ₾` : '';
+  const ratingTxt    = stats?.avg_rating
     ? `⭐ ${parseFloat(stats.avg_rating).toFixed(1)} avg (${parseInt(stats.rated_count)} შეფ.)`
     : '⭐ შეუფასებელი';
+  const partnerLabel = d.is_partner ? '🤝 პარტნიორი' : '';
 
   const text = [
-    `👤 *${d.full_name}*`,
+    `👤 *${d.full_name}*${partnerLabel ? `  ${partnerLabel}` : ''}`,
     `📱 Telegram ID: \`${d.telegram_id}\``,
     `📞 ტელეფონი: ${d.phone}`,
     `🚛 ${typeLabel} | 🚘 ${d.car_model || '—'} | ნომ: ${d.car_plate || '—'}`,
@@ -1580,7 +1582,8 @@ async function showDriverProfile(chatId, driverId) {
     `${statusLabel} | ${availLabel}`,
   ].join('\n');
 
-  const toggleLabel = d.is_active ? '🔴 გაბლოკვა' : '🟢 განბლოკვა';
+  const toggleLabel   = d.is_active  ? '🔴 გაბლოკვა'      : '🟢 განბლოკვა';
+  const partnerToggle = d.is_partner ? '🤝 პარტნიორი ✅'   : '🤝 პარტნიორი ❌';
 
   return bot.sendMessage(chatId, text, {
     parse_mode: 'Markdown',
@@ -1599,8 +1602,9 @@ async function showDriverProfile(chatId, driverId) {
           { text: '➖ ფულის გატანა',  callback_data: `adm_wd_drv:${d.id}`       },
           { text: '📜 გატანის ისტ.',   callback_data: `adm_wdhist_drv:${d.id}`  },
         ],
-        [{ text: toggleLabel,           callback_data: `adm_drv_toggle:${d.id}` }],
-        [{ text: '← უკან',              callback_data: 'adm_drv_back'           }],
+        [{ text: partnerToggle, callback_data: `adm_drv_partner:${d.id}` }],
+        [{ text: toggleLabel,   callback_data: `adm_drv_toggle:${d.id}`  }],
+        [{ text: '← უკან',      callback_data: 'adm_drv_back'            }],
       ],
     },
   });
@@ -1687,6 +1691,17 @@ async function onDrvToggle(query) {
   return showDriverProfile(chatId, id);
 }
 
+async function onDrvPartnerToggle(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const id     = parseInt(query.data.split(':')[1], 10);
+  const result = await toggleDriverPartner(id);
+  if (!result) return bot.sendMessage(chatId, '⚠️ ვერ შეიცვალა სტატუსი.');
+  const label  = result.is_partner ? '🤝 პარტნიორი: ჩართულია' : '🤝 პარტნიორი: გამორთულია';
+  await bot.sendMessage(chatId, `${label} — *${result.full_name}*`, { parse_mode: 'Markdown' });
+  return showDriverProfile(chatId, id);
+}
+
 async function onCancelInput(query) {
   const chatId = query.message.chat.id;
   clearOrder(chatId); clearBonus(chatId); clearWd(chatId);
@@ -1709,6 +1724,7 @@ const PRICING_KEYS = {
   large_vehicle_surcharge:{ label: '🚌 დიდი ავტ. (surcharge)', unit: '%', validate: v => v >= 0 && v <= 1 },
   non_rolling_surcharge:  { label: '🏗 ამწე (surcharge)',      unit: '%',  validate: v => v >= 0 && v <= 1 },
   commission_rate:        { label: '💼 საკომისიო',             unit: '%',  validate: v => v >= 0 && v <= 1 },
+  partner_commission_rate:{ label: '🤝 პარტნიორის საკომისიო', unit: '%',  validate: v => v >= 0 && v <= 1 },
 };
 
 async function showPricingMenu(chatId) {

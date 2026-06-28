@@ -64,6 +64,7 @@ async function getPricingConfig() {
     bonusThreshold:        raw['bonus_threshold'],
     bonusAmount:           raw['bonus_amount'],
     commissionRate:        raw['commission_rate'],
+    partnerCommissionRate: isNaN(raw['partner_commission_rate']) ? null : raw['partner_commission_rate'],
   };
   _cacheTime = now;
   logger.info('Pricing config refreshed from Google Sheets', _cache);

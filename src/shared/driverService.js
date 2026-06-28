@@ -106,6 +106,15 @@ async function toggleDriverActive(driverId) {
   return rows[0] || null;
 }
 
+async function toggleDriverPartner(driverId) {
+  const { rows } = await pool.query(
+    `UPDATE drivers SET is_partner = NOT is_partner
+     WHERE id = $1 RETURNING id, full_name, is_partner`,
+    [driverId]
+  );
+  return rows[0] || null;
+}
+
 // Add an incentive bonus to a driver's bonus_balance.
 async function addBonusBalance(telegramId, amount) {
   const { rows } = await pool.query(
@@ -137,7 +146,7 @@ module.exports = {
   addBonusBalance,
   getAllDrivers, countDrivers, searchDrivers,
   findDriverById, findDriverByPhone,
-  updateDriverField, toggleDriverActive,
+  updateDriverField, toggleDriverActive, toggleDriverPartner,
   getActiveDriverTelegramIds,
   updateDriverLocation,
 };
