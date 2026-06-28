@@ -25,13 +25,24 @@ const STEPS = {
   AWAIT_PASS_EDIT_FIELD: 'AWAIT_PASS_EDIT_FIELD',
   // Broadcast
   AWAIT_BROADCAST_TEXT:  'AWAIT_BROADCAST_TEXT',
+  // Admin management (owner only)
+  AWAIT_ADMIN_ADD_ID:    'AWAIT_ADMIN_ADD_ID',
+  // Pricing management
+  AWAIT_PRICING_VALUE:   'AWAIT_PRICING_VALUE',
+  // Bonus config
+  AWAIT_BONUS_CONFIG_VALUE: 'AWAIT_BONUS_CONFIG_VALUE',
 };
 
 const sessions = new Map();
 
 function getSession(chatId) {
   if (!sessions.has(chatId)) {
-    sessions.set(chatId, { step: STEPS.IDLE, order: {}, bonus: {}, wd: {}, drvMgmt: {}, passMgmt: {}, broadcast: {} });
+    sessions.set(chatId, {
+      step: STEPS.IDLE, role: null,
+      order: {}, bonus: {}, wd: {},
+      drvMgmt: {}, passMgmt: {}, broadcast: {},
+      adminMgmt: {}, pricing: {}, bonusCfg: {},
+    });
   }
   return sessions.get(chatId);
 }
@@ -78,8 +89,29 @@ function clearPassMgmt(chatId) {
 
 function updateBroadcast(chatId, data) { Object.assign(getSession(chatId).broadcast, data); }
 function clearBroadcast(chatId) {
+  const s     = getSession(chatId);
+  s.broadcast = {};
+  s.step      = STEPS.IDLE;
+}
+
+function updateAdminMgmt(chatId, data) { Object.assign(getSession(chatId).adminMgmt, data); }
+function clearAdminMgmt(chatId) {
   const s      = getSession(chatId);
-  s.broadcast  = {};
+  s.adminMgmt  = {};
+  s.step       = STEPS.IDLE;
+}
+
+function updatePricing(chatId, data) { Object.assign(getSession(chatId).pricing, data); }
+function clearPricing(chatId) {
+  const s   = getSession(chatId);
+  s.pricing = {};
+  s.step    = STEPS.IDLE;
+}
+
+function updateBonusCfg(chatId, data) { Object.assign(getSession(chatId).bonusCfg, data); }
+function clearBonusCfg(chatId) {
+  const s      = getSession(chatId);
+  s.bonusCfg   = {};
   s.step       = STEPS.IDLE;
 }
 
@@ -87,4 +119,7 @@ module.exports = {
   STEPS, getSession, setStep,
   updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt, updateBroadcast,
   clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt, clearBroadcast,
+  updateAdminMgmt, clearAdminMgmt,
+  updatePricing, clearPricing,
+  updateBonusCfg, clearBonusCfg,
 };

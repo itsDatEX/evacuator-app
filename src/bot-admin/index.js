@@ -12,6 +12,7 @@ const {
   STEPS, getSession, setStep,
   updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt, updateBroadcast,
   clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt, clearBroadcast,
+  updateAdminMgmt, clearAdminMgmt, updatePricing, clearPricing, updateBonusCfg, clearBonusCfg,
 } = require('./sessions');
 const {
   createOrder, getOrderStats, getAdminHistory, getActiveOrders,
@@ -22,7 +23,8 @@ const {
   getAllWithdrawals, getPassengerOrderHistory, getDriverWithdrawalHistory,
   arriveOrder, startOrder, completeOrder, settleOrder, getOrderById,
 } = require('../shared/orderService');
-const { calculatePrice, getPricingConfig }  = require('../shared/sheets');
+const { calculatePrice, getPricingConfig, updatePricingConfig } = require('../shared/sheets');
+const { getAdminByTelegramId, getAllAdmins, addAdmin, removeAdmin } = require('../shared/adminService');
 const {
   addDiscount,
   getAllPassengers, countPassengers, searchPassengers,
@@ -48,31 +50,41 @@ bot.setMyCommands([
   { command: 'cancel', description: 'მიმდინარე მოქმედების გაუქმება' },
 ]);
 
-// ── Auth guard ────────────────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
-function isAdmin(from) { return from?.id === config.admin.telegramId; }
+async function resolveRole(telegramId) {
+  if (telegramId === config.admin.telegramId) return 'owner';
+  const row = await getAdminByTelegramId(telegramId);
+  return row ? row.role : null; // 'admin' | 'moderator' | null
+}
+
+function isPrivLevel(role) { return role === 'owner' || role === 'admin'; }
 
 function guard(handler) {
   return async (msg, ...rest) => {
-    if (!isAdmin(msg.from)) return;
+    const role = await resolveRole(msg.from.id);
+    if (!role) return;
+    getSession(msg.chat.id).role = role;
     return handler(msg, ...rest);
   };
 }
 
 // ── Keyboards ─────────────────────────────────────────────────────────────────
 
-function mainMenu() {
-  return {
-    keyboard: [
-      [{ text: '📞 ახალი შეკვეთა (ტელეფონი)' }],
-      [{ text: '📊 სტატისტიკა' },    { text: '📋 ბოლო შეკვეთები' }],
-      [{ text: '🎁 ბონუსები' },       { text: '💰 ბალანსები' }],
-      [{ text: '🚚 მძღოლები' },       { text: '🚨 აქტიური შეკვეთები' }],
-      [{ text: '⭐ რეიტინგები' },     { text: '👥 მგზავრები' }],
-      [{ text: '📢 ეცნობოთ ყველას' }, { text: '📄 ექსპორტი' }],
-    ],
-    resize_keyboard: true,
-  };
+function mainMenu(chatId) {
+  const role = getSession(chatId).role || 'moderator';
+  const priv = isPrivLevel(role);
+  const kb = [
+    [{ text: '📞 ახალი შეკვეთა (ტელეფონი)' }],
+    [{ text: '📊 სტატისტიკა' },    { text: '📋 ბოლო შეკვეთები' }],
+    [{ text: '🎁 ბონუსები' },       ...(priv ? [{ text: '💰 ბალანსები' }] : [])],
+    [{ text: '🚚 მძღოლები' },       { text: '🚨 აქტიური შეკვეთები' }],
+    [{ text: '⭐ რეიტინგები' },     { text: '👥 მგზავრები' }],
+    [{ text: '📢 ეცნობოთ ყველას' }, ...(priv ? [{ text: '📄 ექსპორტი' }] : [])],
+  ];
+  if (priv)             kb.push([{ text: '💲 ფასების მართვა' }]);
+  if (role === 'owner') kb.push([{ text: '👮 ადმინების მართვა' }]);
+  return { keyboard: kb, resize_keyboard: true };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -89,15 +101,16 @@ function parseAmount(text) {
 // ── /start ────────────────────────────────────────────────────────────────────
 
 bot.onText(/\/start/, guard(async (msg) => {
-  setStep(msg.chat.id, STEPS.IDLE);
-  await bot.sendMessage(msg.chat.id, '👋 Admin panel:', { reply_markup: mainMenu() });
+  const chatId = msg.chat.id;
+  setStep(chatId, STEPS.IDLE);
+  await bot.sendMessage(chatId, '👋 Admin panel:', { reply_markup: mainMenu(chatId) });
 }));
 
-bot.onText(/\/cancel/, guard((msg) => {
-  clearOrder(msg.chat.id);
-  clearBonus(msg.chat.id);
-  clearWd(msg.chat.id);
-  bot.sendMessage(msg.chat.id, '↩️ გაუქმდა.', { reply_markup: mainMenu() });
+bot.onText(/\/cancel/, guard(async (msg) => {
+  const chatId = msg.chat.id;
+  clearOrder(chatId); clearBonus(chatId); clearWd(chatId);
+  clearAdminMgmt(chatId); clearPricing(chatId); clearBonusCfg(chatId);
+  bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenu(chatId) });
 }));
 
 // ── Message router ────────────────────────────────────────────────────────────
@@ -105,23 +118,31 @@ bot.onText(/\/cancel/, guard((msg) => {
 bot.on('message', guard(async (msg) => {
   const chatId = msg.chat.id;
   if (msg.text?.startsWith('/')) return;
-  const { step } = getSession(chatId);
+  const { step, role } = getSession(chatId);
 
   try {
     switch (step) {
-      case STEPS.IDLE:
-        if      (msg.text === '📞 ახალი შეკვეთა (ტელეფონი)') await startOrderFlow(chatId);
-        else if (msg.text === '📊 სტატისტიკა')               await showStats(chatId);
-        else if (msg.text === '📋 ბოლო შეკვეთები')           await showHistory(chatId);
-        else if (msg.text === '🎁 ბონუსები')                  await showBonusMenu(chatId);
-        else if (msg.text === '💰 ბალანსები')                 await showBalanceMenu(chatId);
-        else if (msg.text === '🚚 მძღოლები')                  await showDriverMenu(chatId);
-        else if (msg.text === '🚨 აქტიური შეკვეთები')         await showActiveOrders(chatId);
-        else if (msg.text === '⭐ რეიტინგები')               await showRatingMenu(chatId);
-        else if (msg.text === '👥 მგზავრები')               await showPassengerMenu(chatId);
-        else if (msg.text === '📢 ეცნობოთ ყველას')         await showBroadcastMenu(chatId);
-        else if (msg.text === '📄 ექსპორტი')               await showExportMenu(chatId);
+      case STEPS.IDLE: {
+        const t = msg.text;
+        if (!isPrivLevel(role) && (
+          t === '💰 ბალანსები' || t === '💲 ფასების მართვა' ||
+          t === '📄 ექსპორტი'  || t === '👮 ადმინების მართვა'
+        )) return bot.sendMessage(chatId, '⛔ ამ განყოფილებაზე წვდომა არ გაქვს.');
+        if      (t === '📞 ახალი შეკვეთა (ტელეფონი)') await startOrderFlow(chatId);
+        else if (t === '📊 სტატისტიკა')               await showStats(chatId);
+        else if (t === '📋 ბოლო შეკვეთები')           await showHistory(chatId);
+        else if (t === '🎁 ბონუსები')                  await showBonusMenu(chatId);
+        else if (t === '💰 ბალანსები')                 await showBalanceMenu(chatId);
+        else if (t === '🚚 მძღოლები')                  await showDriverMenu(chatId);
+        else if (t === '🚨 აქტიური შეკვეთები')         await showActiveOrders(chatId);
+        else if (t === '⭐ რეიტინგები')               await showRatingMenu(chatId);
+        else if (t === '👥 მგზავრები')               await showPassengerMenu(chatId);
+        else if (t === '📢 ეცნობოთ ყველას')         await showBroadcastMenu(chatId);
+        else if (t === '📄 ექსპორტი')               await showExportMenu(chatId);
+        else if (t === '💲 ფასების მართვა')         await showPricingMenu(chatId);
+        else if (t === '👮 ადმინების მართვა')       await showAdminMgmt(chatId);
         break;
+      }
       // Order flow
       case STEPS.AWAIT_PHONE:    await onPhone(chatId, msg.text);    break;
       case STEPS.AWAIT_PICKUP:   await onPickup(chatId, msg.text);   break;
@@ -143,6 +164,12 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_PASS_EDIT_FIELD: await onPassengerEditValue(chatId, msg.text); break;
       // Broadcast
       case STEPS.AWAIT_BROADCAST_TEXT:  await onBroadcastText(chatId, msg.text);      break;
+      // Admin management
+      case STEPS.AWAIT_ADMIN_ADD_ID:    await onAdminAddId(chatId, msg.text);         break;
+      // Pricing
+      case STEPS.AWAIT_PRICING_VALUE:   await onPricingValue(chatId, msg.text);       break;
+      // Bonus config
+      case STEPS.AWAIT_BONUS_CONFIG_VALUE: await onBonusCfgValue(chatId, msg.text);  break;
       default: break;
     }
   } catch (err) {
@@ -166,15 +193,50 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (!isAdmin(query.from)) return bot.answerCallbackQuery(query.id);
+  const role = await resolveRole(query.from.id);
+  if (!role) return bot.answerCallbackQuery(query.id);
+  getSession(chatId).role = role;
+
   const { step } = getSession(chatId);
+  const priv = isPrivLevel(role);
+  const noAccess = async () => bot.answerCallbackQuery(query.id, { text: '⛔ მხოლოდ admin-ს შეუძლია ამის ცვლილება.', show_alert: true });
 
   try {
     if      (data.startsWith('adm_vsize:')   && step === STEPS.AWAIT_VSIZE)   await onVsize(query);
     else if (data.startsWith('adm_canroll:') && step === STEPS.AWAIT_CANROLL) await onCanRoll(query);
     else if (data.startsWith('adm_pay:')     && step === STEPS.AWAIT_PAYMENT) await onPayment(query);
     else if ((data === 'adm_confirm' || data === 'adm_cancel') && step === STEPS.AWAIT_CONFIRM) await onConfirm(query);
-    else if (data === 'adm_bonus_toggle')          await onBonusToggle(query);
+    // Bonus toggle & sub-flows — priv only
+    else if (data === 'adm_bonus_toggle') {
+      if (priv) await onBonusToggle(query); else await noAccess();
+    }
+    else if (data === 'adm_bonus_driver_start') {
+      if (priv) {
+        await bot.answerCallbackQuery(query.id);
+        clearBonus(chatId);
+        setStep(chatId, STEPS.AWAIT_BONUS_DRIVER_ID);
+        await bot.sendMessage(chatId, '🎯 მძღოლის Telegram ID (ან /cancel):', { reply_markup: { remove_keyboard: true } });
+      } else await noAccess();
+    }
+    else if (data === 'adm_disc_pass_start') {
+      if (priv) {
+        await bot.answerCallbackQuery(query.id);
+        clearBonus(chatId);
+        setStep(chatId, STEPS.AWAIT_DISC_PASS_ID);
+        await bot.sendMessage(chatId, '🎟️ მგზავრის Telegram ID (ან /cancel):', { reply_markup: { remove_keyboard: true } });
+      } else await noAccess();
+    }
+    // Bonus config submenu (threshold/amount/commission)
+    else if (data === 'adm_boncfg_menu') {
+      if (priv) await showBonusConfig(query); else await noAccess();
+    }
+    else if (data.startsWith('adm_boncfg:')) {
+      if (priv) await onBonusCfgKey(query); else await noAccess();
+    }
+    // Pricing
+    else if (data.startsWith('adm_price:')) {
+      if (priv) await onPricingKey(query); else await noAccess();
+    }
     // Withdrawal history (all)
     else if (data === 'adm_wdall_menu')            await showWdAllMenu(query);
     else if (data.startsWith('adm_wdall:'))        await onWdAll(query);
@@ -192,7 +254,6 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_rat_pass:'))     await onRatingPassDetail(query);
     // Active orders tabs
     else if (data.startsWith('adm_ac:'))           await onActiveTab(query);
-    else if (data.startsWith('adm_ostatus:'))      await onAdminOrderStatus(query);
     // History filters
     else if (data.startsWith('adm_hist:'))         await onHistFilter(query);
     // Passenger management
@@ -210,6 +271,11 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_drv_edit:'))     await onDrvEditStart(query);
     else if (data.startsWith('adm_drv_toggle:'))   await onDrvToggle(query);
     else if (data === 'adm_drv_back')              { await bot.answerCallbackQuery(query.id); await showDriverMenu(chatId); }
+    // Admin management — owner only
+    else if (data.startsWith('adm_admgmt:')) {
+      if (role === 'owner') await onAdminMgmtCallback(query);
+      else await bot.answerCallbackQuery(query.id, { text: '⛔ მხოლოდ owner-ს შეუძლია.' });
+    }
     else if (data === 'cancel_input')              await onCancelInput(query);
     else if (data === 'noop')                      await bot.answerCallbackQuery(query.id);
     else await bot.answerCallbackQuery(query.id);
@@ -353,7 +419,7 @@ async function onConfirm(query) {
 
   if (query.data === 'adm_cancel') {
     clearOrder(chatId);
-    return bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenu() });
+    return bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenu(chatId) });
   }
 
   const draft = { ...getSession(chatId).order };
@@ -372,7 +438,7 @@ async function onConfirm(query) {
   clearOrder(chatId);
   await bot.sendMessage(chatId,
     `✅ *შეკვეთა #${newOrder.id} შეიქმნა!*\n📞 ${draft.callerPhone} | 💰 ${newOrder.price} ₾`,
-    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
   );
 
   const eligibleDrivers = await getEligibleDrivers(
@@ -537,7 +603,7 @@ async function onBroadcastText(chatId, text) {
   if (!targetBot) {
     return bot.sendMessage(chatId,
       `❌ ${isDrivers ? 'Driver' : 'Passenger'} bot ჯერ არ არის ინიციალიზებული. სცადეთ მოგვიანებით.`,
-      { reply_markup: mainMenu() }
+      { reply_markup: mainMenu(chatId) }
     );
   }
 
@@ -546,7 +612,7 @@ async function onBroadcastText(chatId, text) {
     : await getActivePassengerTelegramIds();
 
   if (!ids.length) {
-    return bot.sendMessage(chatId, '⚠️ აქტიური მომხმარებელი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+    return bot.sendMessage(chatId, '⚠️ აქტიური მომხმარებელი ვერ მოიძებნა.', { reply_markup: mainMenu(chatId) });
   }
 
   await bot.sendMessage(chatId, `📤 ვგზავნი ${ids.length} მომხმარებელს...`);
@@ -564,7 +630,7 @@ async function onBroadcastText(chatId, text) {
 
   return bot.sendMessage(chatId,
     `✅ *გაიგზავნა: ${sent}*${failed ? `\n❌ ვერ გაიგზავნა: ${failed}` : ''}`,
-    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
   );
 }
 
@@ -605,7 +671,7 @@ async function onExport(query) {
   const orders = await getCompletedOrdersForExport(from, to);
 
   if (!orders.length) {
-    return bot.sendMessage(chatId, `📄 ${label} — completed შეკვეთა არ არის.`, { reply_markup: mainMenu() });
+    return bot.sendMessage(chatId, `📄 ${label} — completed შეკვეთა არ არის.`, { reply_markup: mainMenu(chatId) });
   }
 
   const rows = orders.map(o => ({
@@ -956,25 +1022,26 @@ async function onAdminOrderStatus(query) {
 // ══ BONUS MENU ════════════════════════════════════════════════════════════════
 
 async function showBonusMenu(chatId) {
+  const role    = getSession(chatId).role || 'moderator';
+  const priv    = isPrivLevel(role);
   const enabled = await getBonusEnabled();
-  const cfg = await getPricingConfig().catch(() => null);
+  const cfg     = await getPricingConfig().catch(() => null);
   const toggleLabel = enabled ? '✅ ბონუსი: ჩართულია' : '❌ ბონუსი: გამორთულია';
-  const params = cfg
-    ? `\n📋 პარამეტრები (Sheets): ${cfg.bonusThreshold} შეკვეთა → +${cfg.bonusAmount} ₾`
+  const params  = cfg
+    ? `\n📋 threshold: ${cfg.bonusThreshold} შეკვ. → +${cfg.bonusAmount} ₾  |  საკომ: ${(cfg.commissionRate * 100).toFixed(0)}%`
     : '';
+  const readOnlyNote = priv ? '' : '\n\n🔒 ცვლილება მხოლოდ admin-ს შეუძლია';
+
+  const kb = [
+    [{ text: toggleLabel, callback_data: 'adm_bonus_toggle' }],
+    [{ text: '🎯 მძღოლს ბონუსი',      callback_data: 'adm_bonus_driver_start' }],
+    [{ text: '🎟️ მგზავრს ფასდაკლება', callback_data: 'adm_disc_pass_start'   }],
+  ];
+  if (priv) kb.push([{ text: '⚙️ პირობების მართვა', callback_data: 'adm_boncfg_menu' }]);
 
   return bot.sendMessage(chatId,
-    `🎁 *ბონუს სისტემა*${params}\n\nაირჩიეთ მოქმედება:`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: toggleLabel, callback_data: 'adm_bonus_toggle' }],
-          [{ text: '🎯 მძღოლს ბონუსი',       callback_data: 'adm_bonus_driver_start' }],
-          [{ text: '🎟️ მგზავრს ფასდაკლება',  callback_data: 'adm_disc_pass_start'   }],
-        ],
-      },
-    }
+    `🎁 *ბონუს სისტემა*${params}${readOnlyNote}\n\nაირჩიეთ მოქმედება:`,
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
   );
 }
 
@@ -987,27 +1054,6 @@ async function onBonusToggle(query) {
   return showBonusMenu(query.message.chat.id);
 }
 
-// Bonus sub-flows triggered by inline buttons from showBonusMenu
-bot.on('callback_query', async (query) => {
-  if (!isAdmin(query.from)) return;
-  const chatId = query.message.chat.id;
-  const data   = query.data;
-
-  if (data === 'adm_bonus_driver_start') {
-    await bot.answerCallbackQuery(query.id);
-    clearBonus(chatId);
-    setStep(chatId, STEPS.AWAIT_BONUS_DRIVER_ID);
-    return bot.sendMessage(chatId, '🎯 მძღოლის Telegram ID (ან /cancel):',
-      { reply_markup: { remove_keyboard: true } });
-  }
-  if (data === 'adm_disc_pass_start') {
-    await bot.answerCallbackQuery(query.id);
-    clearBonus(chatId);
-    setStep(chatId, STEPS.AWAIT_DISC_PASS_ID);
-    return bot.sendMessage(chatId, '🎟️ მგზავრის Telegram ID (ან /cancel):',
-      { reply_markup: { remove_keyboard: true } });
-  }
-});
 
 async function onBonusDriverId(chatId, text) {
   const id = parseInt(text?.trim(), 10);
@@ -1023,10 +1069,10 @@ async function onBonusAmount(chatId, text) {
   const { bonus } = getSession(chatId);
   const driver = await addBonusBalance(bonus.driverTelegramId, amount);
   clearBonus(chatId);
-  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu(chatId) });
   return bot.sendMessage(chatId,
     `✅ *${driver.full_name}* — bonus_balance: *${driver.bonus_balance} ₾*`,
-    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
   );
 }
 
@@ -1044,10 +1090,10 @@ async function onDiscAmount(chatId, text) {
   const { bonus } = getSession(chatId);
   const pass = await addDiscount(bonus.passTelegramId, amount);
   clearBonus(chatId);
-  if (!pass) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  if (!pass) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu(chatId) });
   return bot.sendMessage(chatId,
     `✅ *${pass.full_name}* — discount_available: *${pass.discount_available} ₾*`,
-    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
   );
 }
 
@@ -1237,7 +1283,7 @@ async function onWdAmount(chatId, text) {
 
   return bot.sendMessage(chatId,
     `✅ *გატანა ჩაიწერა*\n👤 *${driverName}*\n${methodLabel}: ➖ ${amount} ₾\n💰 ახალი ბალანსი: *${newBalance.toFixed(2)} ₾*`,
-    { parse_mode: 'Markdown', reply_markup: mainMenu() }
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
   );
 }
 
@@ -1412,7 +1458,7 @@ async function onPassengerSearch(chatId, text) {
   clearPassMgmt(chatId);
 
   const results = await searchPassengers(text.trim());
-  if (!results.length) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  if (!results.length) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu(chatId) });
   if (results.length === 1) return showPassengerProfile(chatId, results[0].id);
 
   const rows = results.map(p => {
@@ -1579,7 +1625,7 @@ async function onDriverSearch(chatId, text) {
   clearDrvMgmt(chatId);
 
   const results = await searchDrivers(text.trim());
-  if (!results.length) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu() });
+  if (!results.length) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu(chatId) });
   if (results.length === 1) return showDriverProfile(chatId, results[0].id);
 
   const rows = results.map(d => {
@@ -1643,18 +1689,250 @@ async function onDrvToggle(query) {
 
 async function onCancelInput(query) {
   const chatId = query.message.chat.id;
-  clearOrder(chatId);
-  clearBonus(chatId);
-  clearWd(chatId);
-  clearDrvMgmt(chatId);
-  clearPassMgmt(chatId);
-  clearBroadcast(chatId);
+  clearOrder(chatId); clearBonus(chatId); clearWd(chatId);
+  clearDrvMgmt(chatId); clearPassMgmt(chatId); clearBroadcast(chatId);
+  clearAdminMgmt(chatId); clearPricing(chatId); clearBonusCfg(chatId);
   setStep(chatId, STEPS.IDLE);
   await bot.answerCallbackQuery(query.id, { text: '❌ გაუქმდა.' });
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
     chat_id: chatId, message_id: query.message.message_id,
   }).catch(() => {});
-  return bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenu() });
+  return bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenu(chatId) });
+}
+
+// ══ PRICING MANAGEMENT ═══════════════════════════════════════════════════════
+
+const PRICING_KEYS = {
+  base_fare:              { label: '🏁 საბაზო ფასი',         unit: '₾',  validate: v => v > 0 },
+  price_per_km:           { label: '📏 ფასი/კმ',              unit: '₾',  validate: v => v > 0 },
+  jeep_surcharge:         { label: '🚐 ჯიპი (surcharge)',     unit: '%',  validate: v => v >= 0 && v <= 1 },
+  large_vehicle_surcharge:{ label: '🚌 დიდი ავტ. (surcharge)', unit: '%', validate: v => v >= 0 && v <= 1 },
+  non_rolling_surcharge:  { label: '🏗 ამწე (surcharge)',      unit: '%',  validate: v => v >= 0 && v <= 1 },
+};
+
+async function showPricingMenu(chatId) {
+  const cfg = await getPricingConfig().catch(() => null);
+  const rows = Object.entries(PRICING_KEYS).map(([key, meta]) => {
+    let val = cfg ? cfg[key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())] : '?';
+    if (meta.unit === '%' && typeof val === 'number') val = `${(val * 100).toFixed(0)}%`;
+    else if (typeof val === 'number') val = `${val} ${meta.unit}`;
+    return [{ text: `${meta.label}: ${val}`, callback_data: `adm_price:${key}` }];
+  });
+  return bot.sendMessage(chatId, '💲 *ფასების მართვა* — შეარჩიეთ პარამეტრი:', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function onPricingKey(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const key    = query.data.split(':')[1];
+  const meta   = PRICING_KEYS[key];
+  if (!meta) return;
+
+  const cfg = await getPricingConfig().catch(() => null);
+  const camelKey = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  let current = cfg ? cfg[camelKey] : null;
+  if (meta.unit === '%' && typeof current === 'number') current = `${(current * 100).toFixed(0)}%`;
+  else if (typeof current === 'number') current = `${current} ${meta.unit}`;
+
+  updatePricing(chatId, { key });
+  setStep(chatId, STEPS.AWAIT_PRICING_VALUE);
+
+  const hint = meta.unit === '%'
+    ? 'შეიყვანეთ 0-დან 100-მდე (მაგ. 15 = 15%)'
+    : 'შეიყვანეთ დადებითი რიცხვი';
+  return bot.sendMessage(chatId,
+    `${meta.label}\n📌 ამჟამინდელი: *${current ?? '—'}*\n\n✏️ ახალი მნიშვნელობა (${hint}):`,
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
+  );
+}
+
+async function onPricingValue(chatId, text) {
+  const { pricing } = getSession(chatId);
+  const meta = PRICING_KEYS[pricing.key];
+  if (!meta) { clearPricing(chatId); return; }
+
+  let num = parseFloat(text?.replace(',', '.'));
+  if (isNaN(num)) return bot.sendMessage(chatId, '⚠️ რიცხვი შეიყვანეთ:');
+
+  if (meta.unit === '%') num = num / 100;
+  if (!meta.validate(num)) {
+    const hint = meta.unit === '%' ? '0–100 შორის' : 'დადებითი';
+    return bot.sendMessage(chatId, `⚠️ მნიშვნელობა უნდა იყოს ${hint}.`);
+  }
+
+  await updatePricingConfig(pricing.key, num);
+  clearPricing(chatId);
+  await bot.sendMessage(chatId,
+    `✅ *${meta.label}* განახლდა → ${meta.unit === '%' ? `${(num * 100).toFixed(0)}%` : `${num} ${meta.unit}`}`,
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
+  );
+  return showPricingMenu(chatId);
+}
+
+// ══ BONUS CONFIG (threshold / amount / commission) ════════════════════════════
+
+const BONUS_CFG_KEYS = {
+  bonus_threshold:  { label: '🎯 ბონუსის threshold (შეკვ.)', unit: 'შეკვ.', validate: v => v > 0 },
+  bonus_amount:     { label: '💰 ბონუსის თანხა',              unit: '₾',     validate: v => v > 0 },
+  commission_rate:  { label: '💼 საკომისიო',                   unit: '%',     validate: v => v >= 0 && v <= 1 },
+};
+
+async function showBonusConfig(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const cfg    = await getPricingConfig().catch(() => null);
+  const rows   = Object.entries(BONUS_CFG_KEYS).map(([key, meta]) => {
+    let val = '?';
+    if (cfg) {
+      const camel = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      val = cfg[camel];
+      if (meta.unit === '%' && typeof val === 'number') val = `${(val * 100).toFixed(0)}%`;
+      else if (typeof val === 'number') val = `${val} ${meta.unit}`;
+    }
+    return [{ text: `${meta.label}: ${val}`, callback_data: `adm_boncfg:${key}` }];
+  });
+  return bot.sendMessage(chatId, '⚙️ *ბონუს პარამეტრები* — შეარჩიეთ:', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function onBonusCfgKey(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const key    = query.data.split(':')[1];
+  const meta   = BONUS_CFG_KEYS[key];
+  if (!meta) return;
+
+  const cfg    = await getPricingConfig().catch(() => null);
+  const camel  = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  let current  = cfg ? cfg[camel] : null;
+  if (meta.unit === '%' && typeof current === 'number') current = `${(current * 100).toFixed(0)}%`;
+  else if (typeof current === 'number') current = `${current} ${meta.unit}`;
+
+  updateBonusCfg(chatId, { key });
+  setStep(chatId, STEPS.AWAIT_BONUS_CONFIG_VALUE);
+
+  const hint = meta.unit === '%'
+    ? 'შეიყვანეთ 0-დან 100-მდე (მაგ. 15 = 15%)'
+    : 'შეიყვანეთ დადებითი რიცხვი';
+  return bot.sendMessage(chatId,
+    `${meta.label}\n📌 ამჟამინდელი: *${current ?? '—'}*\n\n✏️ ახალი მნიშვნელობა (${hint}):`,
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
+  );
+}
+
+async function onBonusCfgValue(chatId, text) {
+  const { bonusCfg } = getSession(chatId);
+  const meta = BONUS_CFG_KEYS[bonusCfg.key];
+  if (!meta) { clearBonusCfg(chatId); return; }
+
+  let num = parseFloat(text?.replace(',', '.'));
+  if (isNaN(num)) return bot.sendMessage(chatId, '⚠️ რიცხვი შეიყვანეთ:');
+
+  if (meta.unit === '%') num = num / 100;
+  if (!meta.validate(num)) {
+    const hint = meta.unit === '%' ? '0–100 შორის' : 'დადებითი';
+    return bot.sendMessage(chatId, `⚠️ მნიშვნელობა უნდა იყოს ${hint}.`);
+  }
+
+  await updatePricingConfig(bonusCfg.key, num);
+  clearBonusCfg(chatId);
+  return bot.sendMessage(chatId,
+    `✅ *${meta.label}* განახლდა → ${meta.unit === '%' ? `${(num * 100).toFixed(0)}%` : `${num} ${meta.unit}`}`,
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
+  );
+}
+
+// ══ ADMIN MANAGEMENT (owner only) ════════════════════════════════════════════
+
+async function showAdminMgmt(chatId) {
+  const admins = await getAllAdmins();
+  const lines  = admins.length
+    ? admins.map(a => `• ${a.role === 'admin' ? '👮' : '🛡'} *${a.name || a.telegram_id}* (${a.telegram_id}) — ${a.role}`).join('\n')
+    : '_ადმინები არ არიან_';
+
+  return bot.sendMessage(chatId,
+    `👮 *ადმინების მართვა*\n\n${lines}`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [
+        [{ text: '➕ ახალი ადმინი/მოდერატორი', callback_data: 'adm_admgmt:add' }],
+        ...(admins.length ? [[{ text: '➖ წაშლა', callback_data: 'adm_admgmt:remove_list' }]] : []),
+      ]},
+    }
+  );
+}
+
+async function onAdminMgmtCallback(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const action = query.data.split(':')[1];
+
+  if (action === 'add') {
+    clearAdminMgmt(chatId);
+    setStep(chatId, STEPS.AWAIT_ADMIN_ADD_ID);
+    return bot.sendMessage(chatId,
+      '➕ ახალი ადმინის/მოდერატორის *Telegram ID* (რიცხვი):',
+      { parse_mode: 'Markdown', reply_markup: cancelKb() }
+    );
+  }
+
+  if (action === 'remove_list') {
+    const admins = await getAllAdmins();
+    if (!admins.length) return bot.sendMessage(chatId, '⚠️ ადმინები ვერ მოიძებნა.');
+    const rows = admins.map(a => [{
+      text: `${a.role === 'admin' ? '👮' : '🛡'} ${a.name || a.telegram_id} (${a.telegram_id})`,
+      callback_data: `adm_admgmt:remove:${a.telegram_id}`,
+    }]);
+    return bot.sendMessage(chatId, '➖ ვინ წაიშალოს?', {
+      reply_markup: { inline_keyboard: rows },
+    });
+  }
+
+  if (action === 'remove') {
+    const targetId = parseInt(query.data.split(':')[2], 10);
+    const removed  = await removeAdmin(targetId);
+    if (!removed) return bot.sendMessage(chatId, '⚠️ ვერ მოიძებნა.');
+    return bot.sendMessage(chatId,
+      `✅ *${removed.name || removed.telegram_id}* (${removed.role}) წაიშალა.`,
+      { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
+    );
+  }
+
+  if (action === 'role_admin' || action === 'role_moderator') {
+    const { adminMgmt } = getSession(chatId);
+    const role = action === 'role_admin' ? 'admin' : 'moderator';
+    const name = [query.from.first_name, query.from.last_name].filter(Boolean).join(' ') || null;
+    const saved = await addAdmin(adminMgmt.pendingId, adminMgmt.pendingName || null, role, query.from.id);
+    clearAdminMgmt(chatId);
+    const roleLabel = role === 'admin' ? '👮 ადმინი' : '🛡 მოდერატორი';
+    return bot.sendMessage(chatId,
+      `✅ *${saved.name || saved.telegram_id}* (${saved.telegram_id}) დაემატა — ${roleLabel}`,
+      { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
+    );
+  }
+}
+
+async function onAdminAddId(chatId, text) {
+  const id = parseInt(text?.trim(), 10);
+  if (!id || isNaN(id)) return bot.sendMessage(chatId, '⚠️ მოქმედი Telegram ID (რიცხვი):');
+  if (id === config.admin.telegramId) return bot.sendMessage(chatId, '⚠️ owner-ის ID ვერ დაემატება.');
+  updateAdminMgmt(chatId, { pendingId: id });
+  setStep(chatId, STEPS.IDLE);
+  return bot.sendMessage(chatId,
+    `Telegram ID: \`${id}\`\n\nაირჩიეთ როლი:`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[
+        { text: '👮 ადმინი',      callback_data: 'adm_admgmt:role_admin'     },
+        { text: '🛡 მოდერატორი', callback_data: 'adm_admgmt:role_moderator' },
+      ]] },
+    }
+  );
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────

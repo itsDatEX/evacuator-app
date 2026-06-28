@@ -11,7 +11,7 @@ const auth = new google.auth.GoogleAuth({
     client_email: config.google.serviceAccountEmail,
     private_key:  config.google.privateKey,
   },
-  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
 const sheets = google.sheets({ version: 'v4', auth });
@@ -107,4 +107,25 @@ function invalidatePricingCache() {
   _cacheTime = 0;
 }
 
-module.exports = { getPricingConfig, calculatePrice, invalidatePricingCache };
+async function updatePricingConfig(key, value) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.google.spreadsheetId,
+    range: 'Config!A:A',
+  });
+  const keys     = res.data.values || [];
+  const rowIndex = keys.findIndex(([k]) => k?.trim() === key);
+  if (rowIndex < 0) throw new Error(`Config key not found in sheet: "${key}"`);
+  const rowNumber = rowIndex + 1;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.google.spreadsheetId,
+    range:         `Config!B${rowNumber}`,
+    valueInputOption: 'RAW',
+    requestBody:   { values: [[String(value)]] },
+  });
+
+  invalidatePricingCache();
+  logger.info('Pricing config updated', { key, value });
+}
+
+module.exports = { getPricingConfig, calculatePrice, invalidatePricingCache, updatePricingConfig };

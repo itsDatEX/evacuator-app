@@ -21,9 +21,16 @@ const {
   getPendingOrdersMatchingDriver,
 } = require('../shared/orderService');
 const { reverseGeocode, forwardGeocode } = require('../shared/geocoder');
+const { getAdminByTelegramId } = require('../shared/adminService');
 const notifier = require('../shared/notifier');
 
 const bot = new TelegramBot(config.telegram.driverToken, { polling: true });
+
+async function isPrivilegedUser(telegramId) {
+  if (telegramId === config.admin.telegramId) return true;
+  const row = await getAdminByTelegramId(telegramId);
+  return row !== null;
+}
 
 bot.setMyCommands([
   { command: 'start',  description: 'დაწყება / მთავარი მენიუ' },
@@ -749,14 +756,16 @@ async function onArrived(query) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
   }
 
-  if (driver.current_lat == null) {
+  const privileged = await isPrivilegedUser(query.from.id);
+
+  if (!privileged && driver.current_lat == null) {
     return bot.answerCallbackQuery(query.id, {
       text: '📍 GPS ლოკაცია გათეშილია — ჩართე location share, რომ შეგეძლოს გამოძახების მიღება/დასრულება.',
       show_alert: true,
     });
   }
   const orderForArrived = await getOrderById(orderId);
-  if (orderForArrived?.pickup_lat != null) {
+  if (!privileged && orderForArrived?.pickup_lat != null) {
     const dist = haversineKm(
       parseFloat(driver.current_lat), parseFloat(driver.current_lng),
       parseFloat(orderForArrived.pickup_lat), parseFloat(orderForArrived.pickup_lng),
@@ -848,14 +857,16 @@ async function onComplete(query) {
     return bot.answerCallbackQuery(query.id, { text: '⚠️ ჯერ დარეგისტრირდით (/start).' });
   }
 
-  if (driver.current_lat == null) {
+  const privilegedForComplete = await isPrivilegedUser(query.from.id);
+
+  if (!privilegedForComplete && driver.current_lat == null) {
     return bot.answerCallbackQuery(query.id, {
       text: '📍 GPS ლოკაცია გათეშილია — ჩართე location share, რომ შეგეძლოს გამოძახების მიღება/დასრულება.',
       show_alert: true,
     });
   }
   const orderForComplete = await getOrderById(orderId);
-  if (orderForComplete?.dest_lat != null) {
+  if (!privilegedForComplete && orderForComplete?.dest_lat != null) {
     const dist = haversineKm(
       parseFloat(driver.current_lat), parseFloat(driver.current_lng),
       parseFloat(orderForComplete.dest_lat), parseFloat(orderForComplete.dest_lng),
