@@ -920,8 +920,8 @@ async function onComplete(query) {
 
   await bot.answerCallbackQuery(query.id, { text: '✅ შეასრულდა!' });
 
-  const payLabel = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
-  const sign     = result.balanceDelta >= 0 ? '+' : '';
+  const payLabel     = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
+  const finalBalance = (parseFloat(driver.balance) + result.balanceDelta).toFixed(2);
 
   await notifier.notifyPassengerTripCompleted(orderId, order.passenger_telegram_id);
 
@@ -930,7 +930,7 @@ async function onComplete(query) {
     `✅ *შეკვეთა #${orderId} შეასრულდა!*\n\n` +
     `💰 ჯამი: *${order.price} ₾*  |  ${payLabel}\n` +
     `🏦 საკომისიო: ${result.commission} ₾\n` +
-    `📊 ბალანსი: ${sign}${result.balanceDelta} ₾\n\n` +
+    `📊 ბალანსი: *${finalBalance} ₾*\n\n` +
     '⭐ მიეცით შეფასება მგზავრს:',
     {
       parse_mode: 'Markdown',
