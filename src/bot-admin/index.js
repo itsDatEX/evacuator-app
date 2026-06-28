@@ -1708,6 +1708,7 @@ const PRICING_KEYS = {
   jeep_surcharge:         { label: '🚐 ჯიპი (surcharge)',     unit: '%',  validate: v => v >= 0 && v <= 1 },
   large_vehicle_surcharge:{ label: '🚌 დიდი ავტ. (surcharge)', unit: '%', validate: v => v >= 0 && v <= 1 },
   non_rolling_surcharge:  { label: '🏗 ამწე (surcharge)',      unit: '%',  validate: v => v >= 0 && v <= 1 },
+  commission_rate:        { label: '💼 საკომისიო',             unit: '%',  validate: v => v >= 0 && v <= 1 },
 };
 
 async function showPricingMenu(chatId) {
@@ -1775,9 +1776,8 @@ async function onPricingValue(chatId, text) {
 // ══ BONUS CONFIG (threshold / amount / commission) ════════════════════════════
 
 const BONUS_CFG_KEYS = {
-  bonus_threshold:  { label: '🎯 ბონუსის threshold (შეკვ.)', unit: 'შეკვ.', validate: v => v > 0 },
-  bonus_amount:     { label: '💰 ბონუსის თანხა',              unit: '₾',     validate: v => v > 0 },
-  commission_rate:  { label: '💼 საკომისიო',                   unit: '%',     validate: v => v >= 0 && v <= 1 },
+  bonus_threshold: { label: '🎯 ბონუსის threshold (შეკვ.)', unit: 'შეკვ.', validate: v => v > 0 },
+  bonus_amount:    { label: '💰 ბონუსის თანხა',              unit: '₾',     validate: v => v > 0 },
 };
 
 async function showBonusConfig(query) {
