@@ -105,7 +105,7 @@ bot.on('message', guard(async (msg) => {
   try {
     switch (step) {
       case STEPS.IDLE:
-        if      (msg.text === '📞 ახალი შეკვეთა (ტელეფონი)') await startOrder(chatId);
+        if      (msg.text === '📞 ახალი შეკვეთა (ტელეფონი)') await startOrderFlow(chatId);
         else if (msg.text === '📊 სტატისტიკა')               await showStats(chatId);
         else if (msg.text === '📋 ბოლო შეკვეთები')           await showHistory(chatId);
         else if (msg.text === '🎁 ბონუსები')                  await showBonusMenu(chatId);
@@ -210,7 +210,7 @@ function cancelKb() {
   return { inline_keyboard: [[{ text: '❌ გაუქმება', callback_data: 'cancel_input' }]] };
 }
 
-async function startOrder(chatId) {
+async function startOrderFlow(chatId) {
   clearOrder(chatId);
   setStep(chatId, STEPS.AWAIT_PHONE);
   return bot.sendMessage(chatId,
