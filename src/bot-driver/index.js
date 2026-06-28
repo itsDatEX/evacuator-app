@@ -881,32 +881,44 @@ async function onComplete(query) {
 
   const order = await completeOrder(orderId, driver.id);
   if (!order) {
+    const currentOrder = await getOrderById(orderId);
+    if (currentOrder?.status === 'completed') {
+      await setAvailability(driver.telegram_id, true);
+      getSession(chatId).activeOrderId = null;
+      await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+        chat_id: chatId, message_id: query.message.message_id,
+      }).catch(() => {});
+      await bot.answerCallbackQuery(query.id, { text: '✅ შეასრულდა!' });
+      return bot.sendMessage(chatId,
+        `✅ შეკვეთა #${orderId} შეასრულდა.`,
+        { reply_markup: mainMenuKeyboard() });
+    }
     await bot.answerCallbackQuery(query.id, { text: '⚠️ ვერ მოხდა სტატუსის განახლება.' });
     return;
   }
 
-  const result = await settleOrder(orderId);
+  let result = null;
+  try {
+    result = await settleOrder(orderId);
+  } catch (err) {
+    logger.error('settleOrder failed after completeOrder', { orderId, error: err.message });
+  }
+
+  await setAvailability(driver.telegram_id, true);
+  getSession(chatId).activeOrderId = null;
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id:    chatId,
+    message_id: query.message.message_id,
+  }).catch(() => {});
+
   if (!result) {
-    await setAvailability(driver.telegram_id, true);
-    getSession(chatId).activeOrderId = null;
     await bot.answerCallbackQuery(query.id, { text: '✅ შეასრულდა!' });
-    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
-      chat_id: chatId, message_id: query.message.message_id,
-    }).catch(() => {});
     return bot.sendMessage(chatId,
       '✅ შეასრულდა, მაგრამ დეტალური ანგარიში ვერ ჩაიტვირთა — დაუკავშირდი ადმინს.',
       { reply_markup: mainMenuKeyboard() });
   }
 
-  await setAvailability(driver.telegram_id, true);
-  getSession(chatId).activeOrderId = null;
-
   await bot.answerCallbackQuery(query.id, { text: '✅ შეასრულდა!' });
-
-  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
-    chat_id:    chatId,
-    message_id: query.message.message_id,
-  }).catch(() => {});
 
   const payLabel = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
   const sign     = result.balanceDelta >= 0 ? '+' : '';

@@ -1644,6 +1644,16 @@ async function showDriverProfile(chatId, driverId) {
     : '⭐ შეუფასებელი';
   const partnerLabel = d.is_partner ? '🤝 პარტნიორი' : '';
 
+  let personalBonusTxt = null;
+  if (d.personal_bonus_amount) {
+    const pbUntil = d.personal_bonus_until ? new Date(d.personal_bonus_until) : null;
+    if (pbUntil && pbUntil > new Date()) {
+      const cnt  = d.personal_bonus_count    || 0;
+      const thr  = d.personal_bonus_threshold || 0;
+      personalBonusTxt = `🎯 პ-ბონუსი: ${d.personal_bonus_amount} ₾ | ${cnt}/${thr} შეკვ. | ვადა: ${pbUntil.toLocaleDateString('ka-GE')}`;
+    }
+  }
+
   const text = [
     `👤 *${d.full_name}*${partnerLabel ? `  ${partnerLabel}` : ''}`,
     `📱 Telegram ID: \`${d.telegram_id}\``,
@@ -1651,9 +1661,10 @@ async function showDriverProfile(chatId, driverId) {
     `🚛 ${typeLabel} | 🚘 ${d.car_model || '—'} | ნომ: ${d.car_plate || '—'}`,
     `💰 ბალანსი: ${balTxt}${bonusTxt}`,
     ratingTxt,
+    personalBonusTxt,
     `🏦 IBAN: ${d.bank_account || '—'}`,
     `${statusLabel} | ${availLabel}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const toggleLabel   = d.is_active  ? '🔴 გაბლოკვა'      : '🟢 განბლოკვა';
   const partnerToggle = d.is_partner ? '🤝 პარტნიორი ✅'   : '🤝 პარტნიორი ❌';
