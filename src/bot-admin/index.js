@@ -1116,21 +1116,20 @@ async function showBonusMenu(chatId) {
 
   // ── Driver bonus section ──────────────────────────────────────────────────
   const kb = [
-    [{ text: toggleLabel,                  callback_data: 'adm_bonus_toggle'       }],
+    [{ text: toggleLabel, callback_data: 'adm_bonus_toggle' }],
   ];
   if (priv) {
-    kb.push([{ text: '⚙️ ბონუს პარამეტრები',  callback_data: 'adm_boncfg_menu'  }]);
-    kb.push([{ text: '📅 ბონუსის ვადა',        callback_data: 'adm_bp_menu'      }]);
+    kb.push([{ text: '⚙️ ბონუს პარამეტრები', callback_data: 'adm_boncfg_menu' }]);
+    kb.push([{ text: '📅 ბონუსის ვადა',       callback_data: 'adm_bp_menu'     }]);
   }
-  kb.push([{ text: '🎯 მძღოლს ბონუსი (ხელით)', callback_data: 'adm_bonus_driver_start' }]);
 
   // ── Passenger discount section ────────────────────────────────────────────
   if (priv) {
-    kb.push([{ text: '💸 გლობალური ფასდაკლება',  callback_data: 'adm_gdis_menu'    }]);
+    kb.push([{ text: '💸 გლობალური ფასდაკლება',       callback_data: 'adm_gdis_menu'     }]);
   }
   kb.push([{ text: '🎟️ მგზავრს ფასდაკლება (ხელით)', callback_data: 'adm_disc_pass_start' }]);
   if (priv) {
-    kb.push([{ text: '🎟 პრომოკოდები',            callback_data: 'adm_promo_menu'   }]);
+    kb.push([{ text: '🎟 პრომოკოდები', callback_data: 'adm_promo_menu' }]);
   }
 
   return bot.sendMessage(chatId,
