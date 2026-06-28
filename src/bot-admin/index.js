@@ -1087,34 +1087,54 @@ async function showBonusMenu(chatId) {
   const enabled = await getBonusEnabled();
   const cfg     = await getPricingConfig().catch(() => null);
   const period  = await getBonusPeriod().catch(() => ({ start: null, end: null }));
+  const disc    = priv ? await getGlobalDiscount().catch(() => ({ amount: 0, until: null })) : null;
 
   const toggleLabel = enabled ? '✅ ბონუსი: ჩართულია' : '❌ ბონუსი: გამორთულია';
   const now = new Date();
+
+  // Driver bonus system status
   const periodActive = period.start && period.end && now >= period.start && now <= period.end;
   const periodTxt = period.end
     ? (periodActive
-      ? `\n📅 ვადა: ${period.start.toLocaleDateString('ka-GE')} – ${period.end.toLocaleDateString('ka-GE')} (✅ აქტიური)`
-      : `\n📅 ვადა: ამოიწურა (${period.end.toLocaleDateString('ka-GE')})`)
-    : '\n📅 ვადა: არ არის დაყენებული';
-  const params  = cfg
-    ? `\n📋 threshold: ${cfg.bonusThreshold} შეკვ. → +${cfg.bonusAmount} ₾${periodTxt}`
+      ? `📅 ვადა: ${period.start.toLocaleDateString('ka-GE')} – ${period.end.toLocaleDateString('ka-GE')} ✅`
+      : `📅 ვადა: ამოიწურა`)
+    : '📅 ვადა: დაუყენებელი';
+  const cfgTxt = cfg
+    ? `⚙️ ${cfg.bonusThreshold} შეკვ. → +${cfg.bonusAmount} ₾  |  ${periodTxt}`
     : periodTxt;
+
+  // Passenger discount status (priv only)
+  let discTxt = '';
+  if (disc) {
+    const discActive = disc.amount > 0 && disc.until && disc.until > now;
+    discTxt = discActive
+      ? `\n💸 გლობ. ფასდ.: -${disc.amount} ₾ (ვადამდე ${disc.until.toLocaleDateString('ka-GE')}) ✅`
+      : '\n💸 გლობ. ფასდ.: არ არის';
+  }
+
   const readOnlyNote = priv ? '' : '\n\n🔒 ცვლილება მხოლოდ admin-ს შეუძლია';
 
+  // ── Driver bonus section ──────────────────────────────────────────────────
   const kb = [
-    [{ text: toggleLabel,                callback_data: 'adm_bonus_toggle'       }],
-    [{ text: '🎯 მძღოლს ბონუსი (ხელი)', callback_data: 'adm_bonus_driver_start' }],
-    [{ text: '🎟️ მგზავრს ფასდაკლება',  callback_data: 'adm_disc_pass_start'    }],
+    [{ text: toggleLabel,                  callback_data: 'adm_bonus_toggle'       }],
   ];
   if (priv) {
-    kb.push([{ text: '📅 ბონუსის ვადა',           callback_data: 'adm_bp_menu'      }]);
-    kb.push([{ text: '💸 გლობალური ფასდაკლება',   callback_data: 'adm_gdis_menu'    }]);
-    kb.push([{ text: '🎟 პრომოკოდები',             callback_data: 'adm_promo_menu'   }]);
-    kb.push([{ text: '⚙️ ბონუს პარამეტრები',       callback_data: 'adm_boncfg_menu'  }]);
+    kb.push([{ text: '⚙️ ბონუს პარამეტრები',  callback_data: 'adm_boncfg_menu'  }]);
+    kb.push([{ text: '📅 ბონუსის ვადა',        callback_data: 'adm_bp_menu'      }]);
+  }
+  kb.push([{ text: '🎯 მძღოლს ბონუსი (ხელით)', callback_data: 'adm_bonus_driver_start' }]);
+
+  // ── Passenger discount section ────────────────────────────────────────────
+  if (priv) {
+    kb.push([{ text: '💸 გლობალური ფასდაკლება',  callback_data: 'adm_gdis_menu'    }]);
+  }
+  kb.push([{ text: '🎟️ მგზავრს ფასდაკლება (ხელით)', callback_data: 'adm_disc_pass_start' }]);
+  if (priv) {
+    kb.push([{ text: '🎟 პრომოკოდები',            callback_data: 'adm_promo_menu'   }]);
   }
 
   return bot.sendMessage(chatId,
-    `🎁 *ბონუს სისტემა*${params}${readOnlyNote}\n\nაირჩიეთ მოქმედება:`,
+    `🎁 *ბონუს სისტემა*\n\n${cfgTxt}${discTxt}${readOnlyNote}\n\nაირჩიეთ მოქმედება:`,
     { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
   );
 }
