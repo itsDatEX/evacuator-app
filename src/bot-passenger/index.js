@@ -8,6 +8,8 @@ const { findByTelegramId, createPassenger } = require('../shared/passengerServic
 const { createOrder, getPassengerHistory, getEligibleDrivers, rateDriver } = require('../shared/orderService');
 const { consumeDiscount } = require('../shared/passengerService');
 const { calculatePrice } = require('../shared/sheets');
+const { getGlobalDiscount } = require('../shared/configService');
+const { validatePromoCode, applyPromoCode } = require('../shared/promoService');
 const { haversineKm, coordsLabel, getRoadDistanceKm } = require('../shared/geo');
 const { reverseGeocode } = require('../shared/geocoder');
 const notifier = require('../shared/notifier');
@@ -113,6 +115,10 @@ bot.on('message', async (msg) => {
 
       case STEPS.AWAIT_PICKUP_DETAILS:
         if (msg.text) await onPickupDetails(msg);
+        break;
+
+      case STEPS.AWAIT_PROMO_CODE:
+        if (msg.text) await onPromoCodeText(msg);
         break;
 
       case STEPS.IDLE:
@@ -445,6 +451,8 @@ bot.on('callback_query', async (query) => {
         chat_id: chatId, message_id: query.message.message_id,
       }).catch(() => {});
       await bot.sendMessage(chatId, '↩️ გაუქმდა.', { reply_markup: mainMenuKeyboard() });
+    } else if (data === 'promo_skip' && step === STEPS.AWAIT_PROMO_CODE) {
+      await onPromoSkip(query);
     } else if (data.startsWith('rate_driver:')) {
       await onRateDriver(query);
     } else if (data.startsWith('geo_confirm:') &&
@@ -494,42 +502,60 @@ async function onVehicleSize(query) {
 async function onCanRoll(query) {
   const chatId  = query.message.chat.id;
   const canRoll = query.data.split(':')[1] === 'true';
-  const { order } = getSession(chatId);
 
-  const passenger = await findByTelegramId(query.from.id);
-  const discount  = parseFloat(passenger?.discount_available) || 0;
+  const passenger     = await findByTelegramId(query.from.id);
+  const loyaltyDisc   = parseFloat(passenger?.discount_available) || 0;
+  const globalDiscObj = await getGlobalDiscount().catch(() => ({ amount: 0 }));
+  const globalDisc    = globalDiscObj.amount || 0;
+
+  updateOrder(chatId, { canRoll, loyaltyDiscount: loyaltyDisc, globalDiscount: globalDisc });
+  setStep(chatId, STEPS.AWAIT_PROMO_CODE);
+  await bot.answerCallbackQuery(query.id);
+
+  return bot.sendMessage(chatId,
+    '🎟 გაქვთ პრომოკოდი?\n\nჩაწერეთ კოდი, ან:',
+    {
+      reply_markup: {
+        inline_keyboard: [[{ text: '⏭ გამოტოვება', callback_data: 'promo_skip' }]],
+      },
+    }
+  );
+}
+
+async function buildPriceMessage(chatId) {
+  const { order: o } = getSession(chatId);
+  const totalDiscount = (o.loyaltyDiscount || 0) + (o.globalDiscount || 0) + (o.promoDiscount || 0);
 
   let priceResult;
   try {
-    priceResult = await calculatePrice(order.distanceKm, order.vehicleSize, canRoll, discount);
+    priceResult = await calculatePrice(o.distanceKm, o.vehicleSize, o.canRoll, totalDiscount);
   } catch (err) {
     logger.error('calculatePrice failed', { error: err.message });
-    await bot.answerCallbackQuery(query.id);
     return bot.sendMessage(chatId, '❌ ფასის გამოთვლა ვერ მოხდა. სცადეთ /start ხელახლა.');
   }
 
+  const actualDiscount = Math.abs(priceResult.breakdown.discount);
+  const fullPrice      = priceResult.total + actualDiscount;
+
   updateOrder(chatId, {
-    canRoll,
     price:           priceResult.total,
+    fullPrice,
+    discountApplied: actualDiscount,
     breakdown:       priceResult.breakdown,
-    discountApplied: discount > 0 ? Math.abs(priceResult.breakdown.discount) : 0,
   });
   setStep(chatId, STEPS.AWAIT_PAYMENT);
-  await bot.answerCallbackQuery(query.id);
 
-  const { order: o } = getSession(chatId);
   const bd        = priceResult.breakdown;
   const sizeLabel = o.vehicleSize === 'jeep' ? '🚐 ჯიპი' : o.vehicleSize === 'large' ? '🚌 დიდი ავტ.' : '🚙 ჩვეულებრივი';
-  const rollLabel = canRoll ? '✅ გორავს' : '❌ არ გორავს';
+  const rollLabel = o.canRoll ? '✅ გორავს' : '❌ არ გორავს';
 
   const extraLines = [];
   if (bd.size_fee  > 0) extraLines.push(`  დიდი მანქანა: +${bd.size_fee} ₾`);
   if (bd.crane_fee > 0) extraLines.push(`  ამწე (არ გორავს): +${bd.crane_fee} ₾`);
-  if (bd.discount  < 0) extraLines.push(`  🎟️ ფასდაკლება: ${bd.discount} ₾`);
+  if (bd.discount  < 0) extraLines.push(`  🎁 ფასდაკლება: ${bd.discount} ₾`);
   const extrasText = extraLines.length ? extraLines.join('\n') : '  —';
 
-  return bot.sendMessage(
-    chatId,
+  return bot.sendMessage(chatId,
     `📋 *ფასის დეტალები*\n\n` +
     `📍 ${o.pickupAddress} → ${o.destAddress}\n` +
     `📏 ~${o.distanceKm} კმ  |  ${sizeLabel}  |  ${rollLabel}\n\n` +
@@ -549,6 +575,36 @@ async function onCanRoll(query) {
       },
     }
   );
+}
+
+async function onPromoSkip(query) {
+  const chatId = query.message.chat.id;
+  await bot.answerCallbackQuery(query.id);
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+    chat_id: chatId, message_id: query.message.message_id,
+  }).catch(() => {});
+  return buildPriceMessage(chatId);
+}
+
+async function onPromoCodeText(msg) {
+  const chatId    = msg.chat.id;
+  const code      = msg.text?.trim();
+  if (!code) return;
+
+  const passenger = await findByTelegramId(msg.from.id);
+  if (!passenger) return bot.sendMessage(chatId, '⚠️ მომხმარებელი ვერ მოიძებნა.');
+
+  const promo = await validatePromoCode(code, passenger.id);
+  if (!promo) {
+    return bot.sendMessage(chatId,
+      '❌ კოდი არასწორია, ამოწურულია ან უკვე გამოყენებულია.\n\nსცადეთ ხელახლა ან:',
+      { reply_markup: { inline_keyboard: [[{ text: '⏭ გამოტოვება', callback_data: 'promo_skip' }]] } }
+    );
+  }
+
+  updateOrder(chatId, { promoDiscount: parseFloat(promo.discount_amount), promoCodeId: promo.id, promoCode: promo.code });
+  await bot.sendMessage(chatId, `✅ პრომოკოდი მიღებულია: *${promo.code}* — -${promo.discount_amount} ₾`, { parse_mode: 'Markdown' });
+  return buildPriceMessage(chatId);
 }
 
 async function onPayment(query) {
@@ -619,12 +675,17 @@ async function onConfirm(query) {
     canRoll:       draft.canRoll,
     price:         draft.price,
     paymentMethod: draft.paymentMethod,
-    pickupCity:    draft.pickupCity  || null,
-    destCity:      draft.destCity    || null,
+    pickupCity:    draft.pickupCity    || null,
+    destCity:      draft.destCity      || null,
+    fullPrice:     draft.fullPrice     || draft.price,
+    discountAmount: draft.discountApplied || 0,
   });
 
-  if (draft.discountApplied > 0) {
+  if (draft.loyaltyDiscount > 0 && draft.discountApplied > 0) {
     await consumeDiscount(passenger.id);
+  }
+  if (draft.promoCodeId) {
+    await applyPromoCode(draft.promoCodeId, passenger.id);
   }
 
   clearOrder(chatId);

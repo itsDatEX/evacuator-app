@@ -13,6 +13,9 @@ const {
   updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt, updateBroadcast,
   clearOrder, clearBonus, clearWd, clearDrvMgmt, clearPassMgmt, clearBroadcast,
   updateAdminMgmt, clearAdminMgmt, updatePricing, clearPricing, updateBonusCfg, clearBonusCfg,
+  updatePersonalBonus, clearPersonalBonus,
+  updateGlobalDiscount, clearGlobalDiscount,
+  updatePromoMgmt, clearPromoMgmt,
 } = require('./sessions');
 const {
   createOrder, getOrderStats, getAdminHistory, getActiveOrders,
@@ -37,10 +40,16 @@ const {
   getAllDrivers, countDrivers, searchDrivers,
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive, toggleDriverPartner,
+  setPersonalBonus,
   getActiveDriverTelegramIds,
   setAvailability,
 } = require('../shared/driverService');
-const { getBonusEnabled, toggleBonusEnabled } = require('../shared/configService');
+const {
+  getBonusEnabled, toggleBonusEnabled,
+  getBonusPeriod, setBonusPeriod,
+  getGlobalDiscount, setGlobalDiscount,
+} = require('../shared/configService');
+const { createPromoCode, getActivePromoCodes, deactivatePromoCode } = require('../shared/promoService');
 const notifier = require('../shared/notifier');
 
 const bot = new TelegramBot(config.admin.botToken, { polling: true });
@@ -170,6 +179,15 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_PRICING_VALUE:   await onPricingValue(chatId, msg.text);       break;
       // Bonus config
       case STEPS.AWAIT_BONUS_CONFIG_VALUE: await onBonusCfgValue(chatId, msg.text);  break;
+      // Personal bonus (driver profile)
+      case STEPS.AWAIT_PERSONAL_BONUS_AMOUNT:    await onPersonalBonusAmount(chatId, msg.text);    break;
+      case STEPS.AWAIT_PERSONAL_BONUS_THRESHOLD: await onPersonalBonusThreshold(chatId, msg.text); break;
+      // Global discount
+      case STEPS.AWAIT_GLOBAL_DISC_AMOUNT: await onGlobalDiscountAmount(chatId, msg.text); break;
+      // Promo codes
+      case STEPS.AWAIT_PROMO_CODE_TEXT: await onPromoCodeText(chatId, msg.text); break;
+      case STEPS.AWAIT_PROMO_AMOUNT:    await onPromoAmount(chatId, msg.text);   break;
+      case STEPS.AWAIT_PROMO_MAX_USES:  await onPromoMaxUses(chatId, msg.text);  break;
       default: break;
     }
   } catch (err) {
@@ -276,6 +294,40 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('adm_admgmt:')) {
       if (role === 'owner') await onAdminMgmtCallback(query);
       else await bot.answerCallbackQuery(query.id, { text: '⛔ მხოლოდ owner-ს შეუძლია.' });
+    }
+    // Bonus period
+    else if (data === 'adm_bp_menu') {
+      if (priv) await showBonusPeriodMenu(query); else await noAccess();
+    }
+    else if (data.startsWith('adm_bp_period:')) {
+      if (priv) await onBonusPeriodSelect(query); else await noAccess();
+    }
+    // Global discount
+    else if (data === 'adm_gdis_menu') {
+      if (priv) await showGlobalDiscountMenu(query); else await noAccess();
+    }
+    else if (data.startsWith('adm_gdis_period:')) {
+      if (priv) await onGlobalDiscountPeriodSelect(query); else await noAccess();
+    }
+    // Promo codes
+    else if (data === 'adm_promo_menu') {
+      if (priv) await showPromoMenu(query); else await noAccess();
+    }
+    else if (data === 'adm_promo_new') {
+      if (priv) await onPromoNew(query); else await noAccess();
+    }
+    else if (data === 'adm_promo_list') {
+      if (priv) await showPromoList(query); else await noAccess();
+    }
+    else if (data.startsWith('adm_promo_deact:')) {
+      if (priv) await onPromoDeactivate(query); else await noAccess();
+    }
+    // Personal bonus (driver profile)
+    else if (data.startsWith('adm_pb_start:')) {
+      if (priv) await onPersonalBonusStart(query); else await noAccess();
+    }
+    else if (data.startsWith('adm_pb_period:')) {
+      if (priv) await onPersonalBonusPeriodSelect(query); else await noAccess();
     }
     else if (data === 'cancel_input')              await onCancelInput(query);
     else if (data === 'noop')                      await bot.answerCallbackQuery(query.id);
@@ -1027,18 +1079,32 @@ async function showBonusMenu(chatId) {
   const priv    = isPrivLevel(role);
   const enabled = await getBonusEnabled();
   const cfg     = await getPricingConfig().catch(() => null);
+  const period  = await getBonusPeriod().catch(() => ({ start: null, end: null }));
+
   const toggleLabel = enabled ? '✅ ბონუსი: ჩართულია' : '❌ ბონუსი: გამორთულია';
+  const now = new Date();
+  const periodActive = period.start && period.end && now >= period.start && now <= period.end;
+  const periodTxt = period.end
+    ? (periodActive
+      ? `\n📅 ვადა: ${period.start.toLocaleDateString('ka-GE')} – ${period.end.toLocaleDateString('ka-GE')} (✅ აქტიური)`
+      : `\n📅 ვადა: ამოიწურა (${period.end.toLocaleDateString('ka-GE')})`)
+    : '\n📅 ვადა: არ არის დაყენებული';
   const params  = cfg
-    ? `\n📋 threshold: ${cfg.bonusThreshold} შეკვ. → +${cfg.bonusAmount} ₾  |  საკომ: ${(cfg.commissionRate * 100).toFixed(0)}%`
-    : '';
+    ? `\n📋 threshold: ${cfg.bonusThreshold} შეკვ. → +${cfg.bonusAmount} ₾${periodTxt}`
+    : periodTxt;
   const readOnlyNote = priv ? '' : '\n\n🔒 ცვლილება მხოლოდ admin-ს შეუძლია';
 
   const kb = [
-    [{ text: toggleLabel, callback_data: 'adm_bonus_toggle' }],
-    [{ text: '🎯 მძღოლს ბონუსი',      callback_data: 'adm_bonus_driver_start' }],
-    [{ text: '🎟️ მგზავრს ფასდაკლება', callback_data: 'adm_disc_pass_start'   }],
+    [{ text: toggleLabel,                callback_data: 'adm_bonus_toggle'       }],
+    [{ text: '🎯 მძღოლს ბონუსი (ხელი)', callback_data: 'adm_bonus_driver_start' }],
+    [{ text: '🎟️ მგზავრს ფასდაკლება',  callback_data: 'adm_disc_pass_start'    }],
   ];
-  if (priv) kb.push([{ text: '⚙️ პირობების მართვა', callback_data: 'adm_boncfg_menu' }]);
+  if (priv) {
+    kb.push([{ text: '📅 ბონუსის ვადა',           callback_data: 'adm_bp_menu'      }]);
+    kb.push([{ text: '💸 გლობალური ფასდაკლება',   callback_data: 'adm_gdis_menu'    }]);
+    kb.push([{ text: '🎟 პრომოკოდები',             callback_data: 'adm_promo_menu'   }]);
+    kb.push([{ text: '⚙️ ბონუს პარამეტრები',       callback_data: 'adm_boncfg_menu'  }]);
+  }
 
   return bot.sendMessage(chatId,
     `🎁 *ბონუს სისტემა*${params}${readOnlyNote}\n\nაირჩიეთ მოქმედება:`,
@@ -1602,9 +1668,10 @@ async function showDriverProfile(chatId, driverId) {
           { text: '➖ ფულის გატანა',  callback_data: `adm_wd_drv:${d.id}`       },
           { text: '📜 გატანის ისტ.',   callback_data: `adm_wdhist_drv:${d.id}`  },
         ],
-        [{ text: partnerToggle, callback_data: `adm_drv_partner:${d.id}` }],
-        [{ text: toggleLabel,   callback_data: `adm_drv_toggle:${d.id}`  }],
-        [{ text: '← უკან',      callback_data: 'adm_drv_back'            }],
+        [{ text: partnerToggle,          callback_data: `adm_drv_partner:${d.id}`    }],
+        [{ text: '🎯 ბონუსის მინიჭება', callback_data: `adm_pb_start:${d.id}`      }],
+        [{ text: toggleLabel,            callback_data: `adm_drv_toggle:${d.id}`    }],
+        [{ text: '← უკან',               callback_data: 'adm_drv_back'              }],
       ],
     },
   });
@@ -1707,6 +1774,7 @@ async function onCancelInput(query) {
   clearOrder(chatId); clearBonus(chatId); clearWd(chatId);
   clearDrvMgmt(chatId); clearPassMgmt(chatId); clearBroadcast(chatId);
   clearAdminMgmt(chatId); clearPricing(chatId); clearBonusCfg(chatId);
+  clearPersonalBonus(chatId); clearGlobalDiscount(chatId); clearPromoMgmt(chatId);
   setStep(chatId, STEPS.IDLE);
   await bot.answerCallbackQuery(query.id, { text: '❌ გაუქმდა.' });
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
@@ -1949,6 +2017,221 @@ async function onAdminAddId(chatId, text) {
       ]] },
     }
   );
+}
+
+// ══ BONUS PERIOD ══════════════════════════════════════════════════════════════
+
+const PERIOD_OPTIONS = [
+  { label: '1 დღე',   days: 1  },
+  { label: '1 კვირა', days: 7  },
+  { label: '2 კვირა', days: 14 },
+  { label: '1 თვე',   days: 30 },
+];
+
+async function showBonusPeriodMenu(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const period = await getBonusPeriod().catch(() => ({ start: null, end: null }));
+  const now    = new Date();
+  const active = period.start && period.end && now >= period.start && now <= period.end;
+  const info   = period.end
+    ? (active
+      ? `✅ აქტიური: ${period.start.toLocaleDateString('ka-GE')} – ${period.end.toLocaleDateString('ka-GE')}`
+      : `ამოიწურა: ${period.end.toLocaleDateString('ka-GE')}`)
+    : 'ვადა არ არის დაყენებული';
+
+  const kb = PERIOD_OPTIONS.map(o => [{ text: o.label, callback_data: `adm_bp_period:${o.days}` }]);
+  return bot.sendMessage(chatId,
+    `📅 *ბონუსის ვადა*\n\n${info}\n\nდააჭირეთ ახალი ვადის დასაყენებლად (მთლიანი counter ნულდება):`,
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
+  );
+}
+
+async function onBonusPeriodSelect(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const days   = parseInt(query.data.split(':')[1], 10);
+  const start  = new Date();
+  const end    = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  await setBonusPeriod(start, end);
+  return bot.sendMessage(chatId,
+    `✅ ბონუსის ვადა დაყენდა:\n${start.toLocaleDateString('ka-GE')} – ${end.toLocaleDateString('ka-GE')}\n\nყველა მძღოლის counter ნულდება.`,
+    { reply_markup: mainMenu(chatId) }
+  );
+}
+
+// ══ GLOBAL DISCOUNT ════════════════════════════════════════════════════════════
+
+async function showGlobalDiscountMenu(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const disc   = await getGlobalDiscount().catch(() => ({ amount: 0, until: null }));
+  const info   = disc.amount > 0 && disc.until
+    ? `✅ აქტიური: -${disc.amount} ₾ ვადამდე ${disc.until.toLocaleDateString('ka-GE')}`
+    : '❌ ფასდაკლება არ არის';
+
+  const kb = PERIOD_OPTIONS.map(o => [{ text: o.label, callback_data: `adm_gdis_period:${o.days}` }]);
+  return bot.sendMessage(chatId,
+    `💸 *გლობალური ფასდაკლება*\n\n${info}\n\nაირჩიეთ ვადა (შემდეგ შეიყვანეთ თანხა):`,
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
+  );
+}
+
+async function onGlobalDiscountPeriodSelect(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const days   = parseInt(query.data.split(':')[1], 10);
+  const until  = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  updateGlobalDiscount(chatId, { until });
+  setStep(chatId, STEPS.AWAIT_GLOBAL_DISC_AMOUNT);
+  return bot.sendMessage(chatId,
+    `💸 ვადა: ${until.toLocaleDateString('ka-GE')}\n\nშეიყვანეთ ფასდაკლების თანხა (₾):`,
+    { reply_markup: cancelKb() }
+  );
+}
+
+async function onGlobalDiscountAmount(chatId, text) {
+  const amount = parseAmount(text);
+  if (!amount) return bot.sendMessage(chatId, '⚠️ დადებითი რიცხვი:');
+  const { globalDiscount } = getSession(chatId);
+  await setGlobalDiscount(amount, globalDiscount.until);
+  clearGlobalDiscount(chatId);
+  return bot.sendMessage(chatId,
+    `✅ გლობალური ფასდაკლება: *-${amount} ₾* ვადამდე ${globalDiscount.until.toLocaleDateString('ka-GE')}`,
+    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
+  );
+}
+
+// ══ PROMO CODES ════════════════════════════════════════════════════════════════
+
+async function showPromoMenu(query) {
+  await bot.answerCallbackQuery(query.id);
+  return bot.sendMessage(query.message.chat.id, '🎟 *პრომოკოდები*\n\nაირჩიეთ:', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [
+      [{ text: '➕ ახალი კოდი',    callback_data: 'adm_promo_new'  }],
+      [{ text: '📋 აქტიური კოდები', callback_data: 'adm_promo_list' }],
+    ]},
+  });
+}
+
+async function onPromoNew(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  clearPromoMgmt(chatId);
+  setStep(chatId, STEPS.AWAIT_PROMO_CODE_TEXT);
+  return bot.sendMessage(chatId, '✏️ ახალი პრომოკოდის ტექსტი (ლათინური, ციფრები):', { reply_markup: cancelKb() });
+}
+
+async function onPromoCodeText(chatId, text) {
+  const code = text?.trim().toUpperCase().replace(/\s+/g, '');
+  if (!code || code.length < 3) return bot.sendMessage(chatId, '⚠️ მინ. 3 სიმბოლო:');
+  updatePromoMgmt(chatId, { code });
+  setStep(chatId, STEPS.AWAIT_PROMO_AMOUNT);
+  return bot.sendMessage(chatId, `✅ კოდი: \`${code}\`\n\n💰 ფასდაკლების თანხა (₾):`, { parse_mode: 'Markdown', reply_markup: cancelKb() });
+}
+
+async function onPromoAmount(chatId, text) {
+  const amount = parseAmount(text);
+  if (!amount) return bot.sendMessage(chatId, '⚠️ დადებითი რიცხვი:');
+  updatePromoMgmt(chatId, { amount });
+  setStep(chatId, STEPS.AWAIT_PROMO_MAX_USES);
+  return bot.sendMessage(chatId, `💰 თანხა: ${amount} ₾\n\n🔢 მაქს. გამოყენების რაოდენობა (1-ჯერ = 1):`, { reply_markup: cancelKb() });
+}
+
+async function onPromoMaxUses(chatId, text) {
+  const uses = parseInt(text?.trim(), 10);
+  if (!uses || uses < 1) return bot.sendMessage(chatId, '⚠️ დადებითი მთელი რიცხვი:');
+  const { promoMgmt } = getSession(chatId);
+  try {
+    const promo = await createPromoCode(promoMgmt.code, promoMgmt.amount, uses);
+    clearPromoMgmt(chatId);
+    return bot.sendMessage(chatId,
+      `✅ პრომოკოდი შექმნილია:\nკოდი: \`${promo.code}\`\nთანხა: ${promo.discount_amount} ₾\nმაქს.: ${promo.max_uses}×`,
+      { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
+    );
+  } catch (err) {
+    clearPromoMgmt(chatId);
+    return bot.sendMessage(chatId, '⚠️ ეს კოდი უკვე არსებობს.', { reply_markup: mainMenu(chatId) });
+  }
+}
+
+async function showPromoList(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const codes  = await getActivePromoCodes();
+  if (!codes.length) return bot.sendMessage(chatId, '🎟 აქტიური პრომოკოდები არ არის.');
+  const kb = codes.map(c => [{
+    text:          `${c.code} | -${c.discount_amount}₾ | ${c.used_count}/${c.max_uses}×`,
+    callback_data: `adm_promo_deact:${c.id}`,
+  }]);
+  return bot.sendMessage(chatId,
+    '🎟 *აქტიური კოდები* (დააჭირეთ გასაუქმებლად):',
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
+  );
+}
+
+async function onPromoDeactivate(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const id     = parseInt(query.data.split(':')[1], 10);
+  const result = await deactivatePromoCode(id);
+  if (!result) return bot.sendMessage(chatId, '⚠️ კოდი ვერ მოიძებნა.');
+  return bot.sendMessage(chatId, `✅ კოდი გაუქმდა: \`${result.code}\``, { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) });
+}
+
+// ══ PERSONAL BONUS (driver profile) ═══════════════════════════════════════════
+
+async function onPersonalBonusStart(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId   = query.message.chat.id;
+  const driverId = parseInt(query.data.split(':')[1], 10);
+  clearPersonalBonus(chatId);
+  updatePersonalBonus(chatId, { driverId });
+  const kb = PERIOD_OPTIONS.map(o => [{ text: o.label, callback_data: `adm_pb_period:${o.days}:${driverId}` }]);
+  return bot.sendMessage(chatId,
+    '🎯 *პერსონალური ბონუსი*\n\nაირჩიეთ ვადა:',
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
+  );
+}
+
+async function onPersonalBonusPeriodSelect(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId = query.message.chat.id;
+  const parts  = query.data.split(':');   // adm_pb_period:{days}:{driverId}
+  const days   = parseInt(parts[1], 10);
+  const until  = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  updatePersonalBonus(chatId, { until });
+  setStep(chatId, STEPS.AWAIT_PERSONAL_BONUS_AMOUNT);
+  return bot.sendMessage(chatId,
+    `🎯 ვადა: ${until.toLocaleDateString('ka-GE')}\n\n💰 ბონუსის თანხა (₾):`,
+    { reply_markup: cancelKb() }
+  );
+}
+
+async function onPersonalBonusAmount(chatId, text) {
+  const amount = parseAmount(text);
+  if (!amount) return bot.sendMessage(chatId, '⚠️ დადებითი რიცხვი:');
+  updatePersonalBonus(chatId, { amount });
+  setStep(chatId, STEPS.AWAIT_PERSONAL_BONUS_THRESHOLD);
+  return bot.sendMessage(chatId,
+    `💰 თანხა: ${amount} ₾\n\n🔢 რამდენი შეკვეთა უნდა შეასრულოს ვადაში (ბონუსი ერთხელ ჩაირიცხება):`,
+    { reply_markup: cancelKb() }
+  );
+}
+
+async function onPersonalBonusThreshold(chatId, text) {
+  const threshold = parseInt(text?.trim(), 10);
+  if (!threshold || threshold < 1) return bot.sendMessage(chatId, '⚠️ დადებითი მთელი რიცხვი:');
+  const { personalBonus } = getSession(chatId);
+  const driver = await setPersonalBonus(personalBonus.driverId, personalBonus.amount, threshold, personalBonus.until);
+  clearPersonalBonus(chatId);
+  if (!driver) return bot.sendMessage(chatId, '⚠️ მძღოლი ვერ მოიძებნა.', { reply_markup: mainMenu(chatId) });
+  await bot.sendMessage(chatId,
+    `✅ *${driver.full_name}*\nბონუსი: ${driver.personal_bonus_amount} ₾ — ${threshold} შეკვ. ვადამდე ${new Date(driver.personal_bonus_until).toLocaleDateString('ka-GE')}`,
+    { parse_mode: 'Markdown' }
+  );
+  return showDriverProfile(chatId, driver.id);
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────

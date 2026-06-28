@@ -31,6 +31,15 @@ const STEPS = {
   AWAIT_PRICING_VALUE:   'AWAIT_PRICING_VALUE',
   // Bonus config
   AWAIT_BONUS_CONFIG_VALUE: 'AWAIT_BONUS_CONFIG_VALUE',
+  // Personal bonus (driver profile)
+  AWAIT_PERSONAL_BONUS_AMOUNT:    'AWAIT_PERSONAL_BONUS_AMOUNT',
+  AWAIT_PERSONAL_BONUS_THRESHOLD: 'AWAIT_PERSONAL_BONUS_THRESHOLD',
+  // Global discount
+  AWAIT_GLOBAL_DISC_AMOUNT: 'AWAIT_GLOBAL_DISC_AMOUNT',
+  // Promo codes
+  AWAIT_PROMO_CODE_TEXT: 'AWAIT_PROMO_CODE_TEXT',
+  AWAIT_PROMO_AMOUNT:    'AWAIT_PROMO_AMOUNT',
+  AWAIT_PROMO_MAX_USES:  'AWAIT_PROMO_MAX_USES',
 };
 
 const sessions = new Map();
@@ -42,6 +51,7 @@ function getSession(chatId) {
       order: {}, bonus: {}, wd: {},
       drvMgmt: {}, passMgmt: {}, broadcast: {},
       adminMgmt: {}, pricing: {}, bonusCfg: {},
+      personalBonus: {}, globalDiscount: {}, promoMgmt: {},
     });
   }
   return sessions.get(chatId);
@@ -115,6 +125,27 @@ function clearBonusCfg(chatId) {
   s.step       = STEPS.IDLE;
 }
 
+function updatePersonalBonus(chatId, data) { Object.assign(getSession(chatId).personalBonus, data); }
+function clearPersonalBonus(chatId) {
+  const s          = getSession(chatId);
+  s.personalBonus  = {};
+  s.step           = STEPS.IDLE;
+}
+
+function updateGlobalDiscount(chatId, data) { Object.assign(getSession(chatId).globalDiscount, data); }
+function clearGlobalDiscount(chatId) {
+  const s           = getSession(chatId);
+  s.globalDiscount  = {};
+  s.step            = STEPS.IDLE;
+}
+
+function updatePromoMgmt(chatId, data) { Object.assign(getSession(chatId).promoMgmt, data); }
+function clearPromoMgmt(chatId) {
+  const s      = getSession(chatId);
+  s.promoMgmt  = {};
+  s.step       = STEPS.IDLE;
+}
+
 module.exports = {
   STEPS, getSession, setStep,
   updateOrder, updateBonus, updateWd, updateDrvMgmt, updatePassMgmt, updateBroadcast,
@@ -122,4 +153,7 @@ module.exports = {
   updateAdminMgmt, clearAdminMgmt,
   updatePricing, clearPricing,
   updateBonusCfg, clearBonusCfg,
+  updatePersonalBonus, clearPersonalBonus,
+  updateGlobalDiscount, clearGlobalDiscount,
+  updatePromoMgmt, clearPromoMgmt,
 };

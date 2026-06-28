@@ -115,6 +115,18 @@ async function toggleDriverPartner(driverId) {
   return rows[0] || null;
 }
 
+async function setPersonalBonus(driverId, amount, threshold, until) {
+  const { rows } = await pool.query(
+    `UPDATE drivers
+     SET personal_bonus_amount=$1, personal_bonus_threshold=$2,
+         personal_bonus_until=$3,  personal_bonus_count=0
+     WHERE id=$4
+     RETURNING id, full_name, personal_bonus_amount, personal_bonus_threshold, personal_bonus_until`,
+    [amount, threshold, until, driverId]
+  );
+  return rows[0] || null;
+}
+
 // Add an incentive bonus to a driver's bonus_balance.
 async function addBonusBalance(telegramId, amount) {
   const { rows } = await pool.query(
@@ -147,6 +159,7 @@ module.exports = {
   getAllDrivers, countDrivers, searchDrivers,
   findDriverById, findDriverByPhone,
   updateDriverField, toggleDriverActive, toggleDriverPartner,
+  setPersonalBonus,
   getActiveDriverTelegramIds,
   updateDriverLocation,
 };

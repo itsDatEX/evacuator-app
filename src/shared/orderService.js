@@ -1,6 +1,6 @@
 const pool = require('../database/pool');
 const { getPricingConfig } = require('./sheets');
-const { getBonusEnabled } = require('./configService');
+const { getBonusEnabled, getBonusPeriod } = require('./configService');
 
 // source: 'telegram' (default) | 'phone' (admin-entered manual order)
 // callerPhone: phone number typed by admin for phone orders (null for telegram orders)
@@ -12,6 +12,7 @@ async function createOrder({
   paymentMethod = 'cash',
   source = 'telegram', callerPhone = null,
   pickupCity = null, destCity = null,
+  fullPrice = null, discountAmount = 0,
 }) {
   const { rows } = await pool.query(
     `INSERT INTO orders
@@ -20,8 +21,9 @@ async function createOrder({
         dest_lat,   dest_lng,   destination_address, dest_details,
         vehicle_size, can_roll, price, payment_method,
         source, caller_phone,
-        pickup_city, dest_city)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        pickup_city, dest_city,
+        full_price, discount_amount)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      RETURNING *`,
     [
       passengerId,
@@ -30,6 +32,7 @@ async function createOrder({
       vehicleSize, canRoll, price, paymentMethod,
       source, callerPhone,
       pickupCity, destCity,
+      fullPrice ?? price, discountAmount,
     ]
   );
   return rows[0];
@@ -226,19 +229,28 @@ async function settleOrder(orderId) {
     const cfg          = await getPricingConfig();
     const bonusEnabled = await getBonusEnabled();
     const price        = parseFloat(order.price);
+    const fullPrice    = parseFloat(order.full_price) || price;
+    const discountAmt  = Math.round((fullPrice - price) * 100) / 100;
 
     const { rows: [drv] } = await client.query(
-      'SELECT is_partner FROM drivers WHERE id = $1', [order.driver_id]
+      `SELECT is_partner,
+              bonus_period_completed_count,
+              personal_bonus_amount,
+              personal_bonus_threshold,
+              personal_bonus_until,
+              personal_bonus_count
+       FROM drivers WHERE id = $1`, [order.driver_id]
     );
     const rate       = drv?.is_partner && cfg.partnerCommissionRate != null
       ? cfg.partnerCommissionRate
       : cfg.commissionRate;
-    const commission = Math.round(price * rate * 100) / 100;
+    const commission = Math.round(fullPrice * rate * 100) / 100;
 
-    // card: driver receives net fare; cash: driver owes commission to company
+    // card: driver earns full_price - commission (platform absorbs discount)
+    // cash: driver received (price) cash; balance compensates for discount, net = full_price - commission
     const balanceDelta = order.payment_method === 'card'
-      ? Math.round((price - commission) * 100) / 100
-      : -commission;
+      ? Math.round((fullPrice - commission) * 100) / 100
+      : Math.round((discountAmt - commission) * 100) / 100;
 
     await client.query(
       'UPDATE drivers SET balance = balance + $1 WHERE id = $2',
@@ -249,18 +261,43 @@ async function settleOrder(orderId) {
       [commission, orderId]
     );
 
-    // Milestone bonus: every Nth completed order earns bonus_amount
+    // Part A: Global bonus period — increment period counter, award every Nth order
     if (bonusEnabled && cfg.bonusThreshold > 0) {
-      const { rows: [{ cnt }] } = await client.query(
-        `SELECT COUNT(*) AS cnt FROM orders
-         WHERE driver_id = $1 AND status = 'completed'`,
-        [order.driver_id]
-      );
-      if (parseInt(cnt, 10) % cfg.bonusThreshold === 0) {
-        await client.query(
-          'UPDATE drivers SET bonus_balance = bonus_balance + $1 WHERE id = $2',
-          [cfg.bonusAmount, order.driver_id]
+      const { start, end } = await getBonusPeriod();
+      const now = new Date();
+      if (start && end && now >= start && now <= end) {
+        const { rows: [periodUpd] } = await client.query(
+          `UPDATE drivers SET bonus_period_completed_count = bonus_period_completed_count + 1
+           WHERE id = $1 RETURNING bonus_period_completed_count`,
+          [order.driver_id]
         );
+        const cnt = parseInt(periodUpd.bonus_period_completed_count, 10);
+        if (cnt % cfg.bonusThreshold === 0) {
+          await client.query(
+            'UPDATE drivers SET bonus_balance = bonus_balance + $1 WHERE id = $2',
+            [cfg.bonusAmount, order.driver_id]
+          );
+        }
+      }
+    }
+
+    // Part B: Personal bonus — award once when threshold reached within period
+    if (drv?.personal_bonus_until && drv.personal_bonus_threshold != null) {
+      const now   = new Date();
+      const until = new Date(drv.personal_bonus_until);
+      if (now < until) {
+        const { rows: [pbUpd] } = await client.query(
+          `UPDATE drivers SET personal_bonus_count = personal_bonus_count + 1
+           WHERE id = $1 RETURNING personal_bonus_count`,
+          [order.driver_id]
+        );
+        const pbCount = parseInt(pbUpd.personal_bonus_count, 10);
+        if (pbCount === drv.personal_bonus_threshold) {
+          await client.query(
+            'UPDATE drivers SET bonus_balance = bonus_balance + $1 WHERE id = $2',
+            [drv.personal_bonus_amount, order.driver_id]
+          );
+        }
       }
     }
 
