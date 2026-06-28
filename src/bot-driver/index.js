@@ -26,6 +26,12 @@ const notifier = require('../shared/notifier');
 
 const bot = new TelegramBot(config.telegram.driverToken, { polling: true });
 
+function navUrl(lat, lng, address) {
+  if (lat && lng) return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+  if (address)    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+  return null;
+}
+
 async function isPrivilegedUser(telegramId) {
   if (telegramId === config.admin.telegramId) return true;
   const row = await getAdminByTelegramId(telegramId);
@@ -727,6 +733,7 @@ async function onAccept(query) {
   const payLabel  = order.payment_method === 'card' ? '💳 ბარათი' : '💵 ნაღდი';
   const sizeLabel = order.vehicle_size === 'jeep' ? '🚐 ჯიპი' : order.vehicle_size === 'large' ? '🚌 დიდი მანქანა' : '🚗 ჩვეულებრივი';
 
+  const pickupNav = navUrl(order.pickup_lat, order.pickup_lng, order.pickup_address);
   return bot.sendMessage(
     chatId,
     `✅ *შეკვეთა #${orderId} მიღებულია!*\n\n` +
@@ -739,6 +746,7 @@ async function onAccept(query) {
       reply_markup: {
         inline_keyboard: [[
           { text: '🚗 მოვედი', callback_data: `arrived:${orderId}` },
+          ...(pickupNav ? [{ text: '🗺 ნავიგაცია', url: pickupNav }] : []),
         ]],
       },
     }
@@ -791,6 +799,7 @@ async function onArrived(query) {
 
   await notifier.notifyPassengerDriverArrived(order.passenger_telegram_id, driver);
 
+  const destNav = navUrl(order.dest_lat, order.dest_lng, order.destination_address);
   return bot.sendMessage(
     chatId,
     `📍 *მოვედი!*\n\n` +
@@ -802,6 +811,7 @@ async function onArrived(query) {
       reply_markup: {
         inline_keyboard: [[
           { text: '🚛 დავიძარი', callback_data: `start:${orderId}` },
+          ...(destNav ? [{ text: '🗺 ნავიგაცია', url: destNav }] : []),
         ]],
       },
     }
