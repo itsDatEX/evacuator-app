@@ -160,7 +160,6 @@ bot.on('message', guard(async (msg) => {
       // Bonus flow
       case STEPS.AWAIT_BONUS_DRIVER_ID: await onBonusDriverId(chatId, msg.text); break;
       case STEPS.AWAIT_BONUS_AMOUNT:    await onBonusAmount(chatId, msg.text);   break;
-      case STEPS.AWAIT_DISC_PASS_ID:    await onDiscPassId(chatId, msg.text);    break;
       case STEPS.AWAIT_DISC_AMOUNT:     await onDiscAmount(chatId, msg.text);    break;
       // Withdrawal flow
       case STEPS.AWAIT_WD_BANK_ACCOUNT: await onWdBankAccount(chatId, msg.text); break;
@@ -237,13 +236,8 @@ bot.on('callback_query', async (query) => {
         await bot.sendMessage(chatId, '🎯 მძღოლის Telegram ID (ან /cancel):', { reply_markup: { remove_keyboard: true } });
       } else await noAccess();
     }
-    else if (data === 'adm_disc_pass_start') {
-      if (priv) {
-        await bot.answerCallbackQuery(query.id);
-        clearBonus(chatId);
-        setStep(chatId, STEPS.AWAIT_DISC_PASS_ID);
-        await bot.sendMessage(chatId, '🎟️ მგზავრის Telegram ID (ან /cancel):', { reply_markup: { remove_keyboard: true } });
-      } else await noAccess();
+    else if (data.startsWith('adm_disc_pass:')) {
+      if (priv) await onDiscPassFromProfile(query); else await noAccess();
     }
     // Bonus config submenu (threshold/amount/commission)
     else if (data === 'adm_boncfg_menu') {
@@ -1125,11 +1119,8 @@ async function showBonusMenu(chatId) {
 
   // ── Passenger discount section ────────────────────────────────────────────
   if (priv) {
-    kb.push([{ text: '💸 გლობალური ფასდაკლება',       callback_data: 'adm_gdis_menu'     }]);
-  }
-  kb.push([{ text: '🎟️ მგზავრს ფასდაკლება (ხელით)', callback_data: 'adm_disc_pass_start' }]);
-  if (priv) {
-    kb.push([{ text: '🎟 პრომოკოდები', callback_data: 'adm_promo_menu' }]);
+    kb.push([{ text: '💸 გლობალური ფასდაკლება', callback_data: 'adm_gdis_menu'   }]);
+    kb.push([{ text: '🎟 პრომოკოდები',           callback_data: 'adm_promo_menu' }]);
   }
 
   return bot.sendMessage(chatId,
@@ -1169,12 +1160,20 @@ async function onBonusAmount(chatId, text) {
   );
 }
 
-async function onDiscPassId(chatId, text) {
-  const id = parseInt(text?.trim(), 10);
-  if (!id) return bot.sendMessage(chatId, '⚠️ მოქმედი Telegram ID:');
-  updateBonus(chatId, { passTelegramId: id });
+async function onDiscPassFromProfile(query) {
+  await bot.answerCallbackQuery(query.id);
+  const chatId      = query.message.chat.id;
+  const passDbId    = parseInt(query.data.split(':')[1], 10);
+  const pass        = await findPassengerById(passDbId);
+  if (!pass) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.');
+  clearBonus(chatId);
+  updateBonus(chatId, { passTelegramId: pass.telegram_id, passDbId });
   setStep(chatId, STEPS.AWAIT_DISC_AMOUNT);
-  return bot.sendMessage(chatId, '💰 ფასდაკლების თანხა (₾):', { reply_markup: cancelKb() });
+  const disc = parseFloat(pass.discount_available) || 0;
+  return bot.sendMessage(chatId,
+    `💰 *${pass.full_name || '—'}*\nამჟ. ფასდაკლება: ${disc} ₾\n\nახალი ფასდაკლების თანხა (₾):`,
+    { parse_mode: 'Markdown', reply_markup: cancelKb() }
+  );
 }
 
 async function onDiscAmount(chatId, text) {
@@ -1184,10 +1183,11 @@ async function onDiscAmount(chatId, text) {
   const pass = await addDiscount(bonus.passTelegramId, amount);
   clearBonus(chatId);
   if (!pass) return bot.sendMessage(chatId, '⚠️ მგზავრი ვერ მოიძებნა.', { reply_markup: mainMenu(chatId) });
-  return bot.sendMessage(chatId,
-    `✅ *${pass.full_name}* — discount_available: *${pass.discount_available} ₾*`,
-    { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
+  await bot.sendMessage(chatId,
+    `✅ *${pass.full_name}* — ფასდაკლება: *${pass.discount_available} ₾*`,
+    { parse_mode: 'Markdown' }
   );
+  return showPassengerProfile(chatId, pass.id);
 }
 
 // ══ BALANCE MENU ══════════════════════════════════════════════════════════════
@@ -1486,9 +1486,10 @@ async function showPassengerProfile(chatId, passengerId) {
           { text: '✏️ სახელი',    callback_data: `adm_pass_edit:${p.id}:full_name` },
           { text: '📱 ტელეფონი', callback_data: `adm_pass_edit:${p.id}:phone`     },
         ],
-        [{ text: '📜 შეკვ. ისტ.',  callback_data: `adm_pass_hist:${p.id}`     }],
-        [{ text: toggleLabel,        callback_data: `adm_pass_toggle:${p.id}`  }],
-        [{ text: '← უკან',           callback_data: 'adm_pass_back'            }],
+        [{ text: '💰 ფასდაკლება',   callback_data: `adm_disc_pass:${p.id}`    }],
+        [{ text: '📜 შეკვ. ისტ.',   callback_data: `adm_pass_hist:${p.id}`    }],
+        [{ text: toggleLabel,         callback_data: `adm_pass_toggle:${p.id}` }],
+        [{ text: '← უკან',            callback_data: 'adm_pass_back'           }],
       ],
     },
   });
