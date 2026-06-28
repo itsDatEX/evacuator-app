@@ -232,14 +232,9 @@ async function settleOrder(orderId) {
     const fullPrice    = parseFloat(order.full_price) || price;
     const discountAmt  = Math.round((fullPrice - price) * 100) / 100;
 
+    // Fetch only the columns that have always existed
     const { rows: [drv] } = await client.query(
-      `SELECT is_partner,
-              bonus_period_completed_count,
-              personal_bonus_amount,
-              personal_bonus_threshold,
-              personal_bonus_until,
-              personal_bonus_count
-       FROM drivers WHERE id = $1`, [order.driver_id]
+      'SELECT is_partner FROM drivers WHERE id = $1', [order.driver_id]
     );
     const rate       = drv?.is_partner && cfg.partnerCommissionRate != null
       ? cfg.partnerCommissionRate
@@ -261,45 +256,54 @@ async function settleOrder(orderId) {
       [commission, orderId]
     );
 
-    // Part A: Global bonus period — increment period counter, award every Nth order
-    if (bonusEnabled && cfg.bonusThreshold > 0) {
-      const { start, end } = await getBonusPeriod();
-      const now = new Date();
-      if (start && end && now >= start && now <= end) {
-        const { rows: [periodUpd] } = await client.query(
-          `UPDATE drivers SET bonus_period_completed_count = bonus_period_completed_count + 1
-           WHERE id = $1 RETURNING bonus_period_completed_count`,
-          [order.driver_id]
-        );
-        const cnt = parseInt(periodUpd.bonus_period_completed_count, 10);
-        if (cnt % cfg.bonusThreshold === 0) {
-          await client.query(
-            'UPDATE drivers SET bonus_balance = bonus_balance + $1 WHERE id = $2',
-            [cfg.bonusAmount, order.driver_id]
+    // Part A: Global bonus period — only runs if migration 017 has been applied
+    try {
+      if (bonusEnabled && cfg.bonusThreshold > 0) {
+        const { start, end } = await getBonusPeriod();
+        const now = new Date();
+        if (start && end && now >= start && now <= end) {
+          const { rows: [periodUpd] } = await client.query(
+            `UPDATE drivers SET bonus_period_completed_count = bonus_period_completed_count + 1
+             WHERE id = $1 RETURNING bonus_period_completed_count`,
+            [order.driver_id]
           );
+          const cnt = parseInt(periodUpd.bonus_period_completed_count, 10);
+          if (cnt % cfg.bonusThreshold === 0) {
+            await client.query(
+              'UPDATE drivers SET bonus_balance = bonus_balance + $1 WHERE id = $2',
+              [cfg.bonusAmount, order.driver_id]
+            );
+          }
         }
       }
-    }
+    } catch (_) { /* bonus period columns not yet migrated — skip silently */ }
 
-    // Part B: Personal bonus — award once when threshold reached within period
-    if (drv?.personal_bonus_until && drv.personal_bonus_threshold != null) {
-      const now   = new Date();
-      const until = new Date(drv.personal_bonus_until);
-      if (now < until) {
-        const { rows: [pbUpd] } = await client.query(
-          `UPDATE drivers SET personal_bonus_count = personal_bonus_count + 1
-           WHERE id = $1 RETURNING personal_bonus_count`,
-          [order.driver_id]
-        );
-        const pbCount = parseInt(pbUpd.personal_bonus_count, 10);
-        if (pbCount === drv.personal_bonus_threshold) {
-          await client.query(
-            'UPDATE drivers SET bonus_balance = bonus_balance + $1 WHERE id = $2',
-            [drv.personal_bonus_amount, order.driver_id]
+    // Part B: Personal bonus — only runs if migration 018 has been applied
+    try {
+      const { rows: [pb] } = await client.query(
+        `SELECT personal_bonus_amount, personal_bonus_threshold,
+                personal_bonus_until, personal_bonus_count
+         FROM drivers WHERE id = $1`, [order.driver_id]
+      );
+      if (pb?.personal_bonus_until && pb.personal_bonus_threshold != null) {
+        const now   = new Date();
+        const until = new Date(pb.personal_bonus_until);
+        if (now < until) {
+          const { rows: [pbUpd] } = await client.query(
+            `UPDATE drivers SET personal_bonus_count = personal_bonus_count + 1
+             WHERE id = $1 RETURNING personal_bonus_count`,
+            [order.driver_id]
           );
+          const pbCount = parseInt(pbUpd.personal_bonus_count, 10);
+          if (pbCount === pb.personal_bonus_threshold) {
+            await client.query(
+              'UPDATE drivers SET bonus_balance = bonus_balance + $1 WHERE id = $2',
+              [pb.personal_bonus_amount, order.driver_id]
+            );
+          }
         }
       }
-    }
+    } catch (_) { /* personal bonus columns not yet migrated — skip silently */ }
 
     await client.query('COMMIT');
     return { commission, balanceDelta };
