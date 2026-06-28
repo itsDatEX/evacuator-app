@@ -7,6 +7,7 @@ async function validatePromoCode(code, passengerId) {
      WHERE pc.code = $1
        AND pc.is_active = true
        AND pc.used_count < pc.max_uses
+       AND (pc.expires_at IS NULL OR pc.expires_at > NOW())
        AND NOT EXISTS (
          SELECT 1 FROM promo_code_usages pcu
          WHERE pcu.promo_code_id = pc.id AND pcu.passenger_id = $2
@@ -37,11 +38,11 @@ async function applyPromoCode(codeId, passengerId) {
   }
 }
 
-async function createPromoCode(code, discountAmount, maxUses = 1) {
+async function createPromoCode(code, discountAmount, maxUses = 1, expiresAt = null) {
   const { rows } = await pool.query(
-    `INSERT INTO promo_codes (code, discount_amount, max_uses)
-     VALUES ($1, $2, $3) RETURNING *`,
-    [code.trim().toUpperCase(), discountAmount, maxUses]
+    `INSERT INTO promo_codes (code, discount_amount, max_uses, expires_at)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [code.trim().toUpperCase(), discountAmount, maxUses, expiresAt]
   );
   return rows[0];
 }

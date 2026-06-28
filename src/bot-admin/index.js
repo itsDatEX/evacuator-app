@@ -188,6 +188,7 @@ bot.on('message', guard(async (msg) => {
       case STEPS.AWAIT_PROMO_CODE_TEXT: await onPromoCodeText(chatId, msg.text); break;
       case STEPS.AWAIT_PROMO_AMOUNT:    await onPromoAmount(chatId, msg.text);   break;
       case STEPS.AWAIT_PROMO_MAX_USES:  await onPromoMaxUses(chatId, msg.text);  break;
+      case STEPS.AWAIT_PROMO_DAYS:      await onPromoDays(chatId, msg.text);     break;
       default: break;
     }
   } catch (err) {
@@ -321,6 +322,12 @@ bot.on('callback_query', async (query) => {
     }
     else if (data.startsWith('adm_promo_deact:')) {
       if (priv) await onPromoDeactivate(query); else await noAccess();
+    }
+    else if (data === 'adm_promo_noexpiry') {
+      if (priv) {
+        await bot.answerCallbackQuery(query.id);
+        await createAndSavePromo(query.message.chat.id, null);
+      } else await noAccess();
     }
     // Personal bonus (driver profile)
     else if (data.startsWith('adm_pb_start:')) {
@@ -2142,12 +2149,35 @@ async function onPromoAmount(chatId, text) {
 async function onPromoMaxUses(chatId, text) {
   const uses = parseInt(text?.trim(), 10);
   if (!uses || uses < 1) return bot.sendMessage(chatId, '⚠️ დადებითი მთელი რიცხვი:');
+  updatePromoMgmt(chatId, { maxUses: uses });
+  setStep(chatId, STEPS.AWAIT_PROMO_DAYS);
+  return bot.sendMessage(chatId,
+    `🔢 მაქს.: ${uses}×\n\n📅 რამდენ დღეში ვადა გაუვიდეს? (ჩაწერეთ დღეების რაოდენობა):`,
+    {
+      reply_markup: {
+        inline_keyboard: [[{ text: '♾ ვადა არ არის', callback_data: 'adm_promo_noexpiry' }]],
+      },
+    }
+  );
+}
+
+async function onPromoDays(chatId, text) {
+  const days = parseInt(text?.trim(), 10);
+  if (!days || days < 1) return bot.sendMessage(chatId, '⚠️ დადებითი მთელი რიცხვი (დღეები):');
+  const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  return createAndSavePromo(chatId, expiresAt);
+}
+
+async function createAndSavePromo(chatId, expiresAt) {
   const { promoMgmt } = getSession(chatId);
   try {
-    const promo = await createPromoCode(promoMgmt.code, promoMgmt.amount, uses);
+    const promo = await createPromoCode(promoMgmt.code, promoMgmt.amount, promoMgmt.maxUses, expiresAt);
     clearPromoMgmt(chatId);
+    const expTxt = promo.expires_at
+      ? `ვადა: ${new Date(promo.expires_at).toLocaleDateString('ka-GE')}`
+      : 'ვადა: ♾ შეუზღუდავი';
     return bot.sendMessage(chatId,
-      `✅ პრომოკოდი შექმნილია:\nკოდი: \`${promo.code}\`\nთანხა: ${promo.discount_amount} ₾\nმაქს.: ${promo.max_uses}×`,
+      `✅ პრომოკოდი შექმნილია:\nკოდი: \`${promo.code}\`\nთანხა: ${promo.discount_amount} ₾\nმაქს.: ${promo.max_uses}×\n${expTxt}`,
       { parse_mode: 'Markdown', reply_markup: mainMenu(chatId) }
     );
   } catch (err) {
@@ -2161,10 +2191,13 @@ async function showPromoList(query) {
   const chatId = query.message.chat.id;
   const codes  = await getActivePromoCodes();
   if (!codes.length) return bot.sendMessage(chatId, '🎟 აქტიური პრომოკოდები არ არის.');
-  const kb = codes.map(c => [{
-    text:          `${c.code} | -${c.discount_amount}₾ | ${c.used_count}/${c.max_uses}×`,
-    callback_data: `adm_promo_deact:${c.id}`,
-  }]);
+  const now = new Date();
+  const kb = codes.map(c => {
+    const expiry = c.expires_at
+      ? (new Date(c.expires_at) < now ? '❌ ვადა გავიდა' : `📅 ${new Date(c.expires_at).toLocaleDateString('ka-GE')}`)
+      : '♾';
+    return [{ text: `${c.code} | -${c.discount_amount}₾ | ${c.used_count}/${c.max_uses}× | ${expiry}`, callback_data: `adm_promo_deact:${c.id}` }];
+  });
   return bot.sendMessage(chatId,
     '🎟 *აქტიური კოდები* (დააჭირეთ გასაუქმებლად):',
     { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
